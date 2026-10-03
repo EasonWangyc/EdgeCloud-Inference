@@ -23,6 +23,15 @@ class EdgeLLMKVCacheAuditTests(unittest.TestCase):
                 root / "cpp/runtime/llmInferenceRuntime.cpp",
                 "bool usePagedKVCache = false;\nvoid run(pageList, tokensPerPage);\n",
             )
+            _write(
+                root / "cpp/runtime/pagePool.cpp",
+                "allocatePage(); freePage(); pageTable = nullptr; pagePool = nullptr;\n",
+            )
+            (root / "cpp/plugins/attentionPlugin").mkdir(parents=True)
+            _write(
+                root / "cpp/plugins/attentionPlugin/attentionPlugin.cpp",
+                "void enqueue(pageList, tokensPerPage);\n",
+            )
             _git(root, "init")
             _git(root, "config", "user.email", "test@example.invalid")
             _git(root, "config", "user.name", "TensorRT test")
@@ -42,6 +51,9 @@ class EdgeLLMKVCacheAuditTests(unittest.TestCase):
             self.assertTrue(report["summary"]["runtime_has_paged_kv_symbols"])
             self.assertTrue(report["summary"]["pool_has_paged_kv_symbols"])
             self.assertTrue(report["summary"]["xqa_has_page_symbols"])
+            self.assertTrue(report["summary"]["attention_plugin_has_paged_bindings"])
+            self.assertTrue(report["summary"]["runtime_has_page_allocator"])
+            self.assertTrue(report["summary"]["complete_source_path"])
             self.assertFalse(
                 report["summary"]["attention_plugin_hardcodes_paged_kv_disabled"]
             )

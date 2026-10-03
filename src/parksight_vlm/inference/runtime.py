@@ -88,6 +88,7 @@ class StageTimings:
     backend_end_to_end_ms: float | None = None
     end_to_end_ms: float | None = None
     time_to_first_token_ms: float | None = None
+    routing_ms: float | None = None
 
     def __post_init__(self) -> None:
         for field_name, value in self.to_mapping().items():
@@ -105,6 +106,7 @@ class StageTimings:
             "backend_end_to_end_ms": self.backend_end_to_end_ms,
             "end_to_end_ms": self.end_to_end_ms,
             "time_to_first_token_ms": self.time_to_first_token_ms,
+            "routing_ms": self.routing_ms,
         }
 
 
@@ -175,6 +177,7 @@ class InferenceRecord:
     stage_timings: StageTimings
     resource_snapshot: ResourceSnapshot
     output_tokens: int | None
+    routing_decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if (self.assessment is None) == (self.failure is None):
@@ -198,6 +201,7 @@ class InferenceRecord:
             "stage_timings": self.stage_timings.to_mapping(),
             "resource_snapshot": self.resource_snapshot.to_mapping(),
             "output_tokens": self.output_tokens,
+            "routing_decision": self.routing_decision,
         }
 
 

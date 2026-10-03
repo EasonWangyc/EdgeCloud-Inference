@@ -1,4 +1,4 @@
-# ParkSight-VLM
+# EdgeCloud-Inference
 
 本项目描述低速泊车场景的风险理解事实，使人工标注、模型推理、性能研究和报告使用一致的业务语言。
 

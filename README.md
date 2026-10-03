@@ -1,4 +1,4 @@
-# JetsonVLM
+# EdgeCloud-Inference
 
 <p>
   <img src="https://img.shields.io/badge/Built%20with-Codex-412991" alt="Built with Codex">
@@ -6,7 +6,6 @@
 
 <p>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6" alt="TypeScript 5.9">
   <img src="https://img.shields.io/badge/Qwen3--VL-2B--Instruct-6E56CF" alt="Qwen3-VL 2B Instruct">
   <img src="https://img.shields.io/badge/TensorRT--Edge--LLM-v0.9.1-76B900" alt="TensorRT Edge-LLM v0.9.1">
   <img src="https://img.shields.io/badge/JetPack-6.2.2-76B900" alt="JetPack 6.2.2">
@@ -21,9 +20,9 @@ TensorRT Edge-LLM 部署和可审计评测链路。
 | 组件 | 版本或固定身份 | 用途 |
 |---|---|---|
 | Python | `>=3.10` | 项目运行环境 |
-| TypeScript | `5.9` | 项目协作/工具链标识；核心运行代码为 Python |
 | Qwen3-VL | `Qwen/Qwen3-VL-2B-Instruct`，revision `89644892e4d85e24eaac8bacfd4f463576704203` | 基础视觉语言模型 |
 | Transformers | 服务器 `5.9.0`；Jetson `4.57.6` | 训练、质量参考和 Jetson FP16 基线 |
+| vLLM | 云侧版本按部署记录 | 云端 GPU OpenAI-compatible 推理服务；当前接入 HTTP Adapter |
 | PyTorch | 服务器 `2.8.0+cu128`；Jetson `2.9.1` | 训练与推理 |
 | PEFT / Accelerate | `0.18.0` / `1.10.1` | LoRA 训练 |
 | ModelOpt | `0.44.0` | INT4 AWQ 量化 |
@@ -69,9 +68,10 @@ parking_risk_v2_strict_json@sha256:6ca953643f38a13b579a77090c77d3fca30d3ba9a1b18
 ParkingCase -> RiskRuntime -> InferenceRecord -> StudyReport
 ```
 
-支持服务器 Transformers 正确性参考、Jetson Transformers FP16、TensorRT Edge-LLM
-FP16、领域 LoRA、合并模型和 LLM backbone INT4 AWQ 研究。服务器结果用于质量和误差
-分析；板端性能只比较 Jetson 上的 runtime。
+支持服务器 Transformers 正确性参考与 vLLM HTTP 服务、Edge-LLM/vLLM HTTP 端云路由、
+Jetson Transformers FP16、TensorRT Edge-LLM FP16、领域 LoRA、合并模型和 LLM backbone
+INT4 AWQ 研究。服务器结果
+用于质量和误差分析；板端性能只比较 Jetson 上的 runtime。
 
 ## 最终已核验结果
 
@@ -122,8 +122,8 @@ Jetson Orin Nano 使用统一内存架构，没有独立的离散显存。下表
 
 | 阶段 | 构建变量 | Prefill（20 次均值） | Decode Graph（20 次均值） | Decode 吞吐 | 相对 level 0 |
 |---|---|---:|---:|---:|---:|
-| level 0 | `builderOptimizationLevel=0` | 526.8711 ms | 126.6875 ms/token | 7.9 tok/s | — |
-| level 1 | `builderOptimizationLevel=1` | 426.7465 ms | 27.4129 ms/token | 36.5 tok/s | prefill `-19.039%`；decode `4.6215×` |
+| level 0 | `builderOptimizationLevel=0` | 526.8768 ms | 126.7803 ms/token | 7.8877 tok/s | — |
+| level 1 | `builderOptimizationLevel=1` | 426.7482 ms | 27.4670 ms/token | 36.4073 tok/s | prefill `-19.0042%`；decode `4.6157×` |
 | level 1 soak | level 1，CUDA Graph，1000 steps | — | 27.3821 ms/token | 36.5202 tok/s | 运行完成，0 次 runtime failure |
 
 level 0/1 的低层复验固定 `pastKVLen=768`、warm-up=10、每次 20 次、seed=0。level 1
@@ -132,16 +132,29 @@ Graph capture 成功，仍记录到独立 metadata loader 的 TensorRT runtime d
 以上 low-level 结果用于确认 engine/tactic 差异的稳定性，不把 HTTP round-trip 当作 decode
 latency，也不将 level 1 表述为已替换默认 engine。
 
-原始证据：[阶段报告](reports/jetson-tensorrt-stage1/phase1_summary.md)、
-[level 0/1 低层复验](reports/jetson-tensorrt-revalidation/int4_level0_level1_prefill768_decode20_20260909.json)、
-[decode 重复性](reports/jetson-tensorrt-revalidation/int4_level0_level1_decode20_repeats_20260909.json)、
-[1000-step soak](reports/jetson-tensorrt-revalidation/int4_level1_decode1000_soak_20260909.json)。
+原始报告位于本地忽略目录 `reports/jetson-tensorrt-stage1/` 与
+`reports/jetson-tensorrt-revalidation/`，不随仓库版本化；仓库内的结论、命令和证据边界见
+下方的 TensorRT 优化摘要与完整实验记录。
 
 ## TensorRT 优化文档
 
 近期 TensorRT Edge-LLM 的 builder、CUDA Graph、Nsight、`lm_head`、INT4 GEMV/GEMM
 和 profile 实验集中在 [TensorRT 优化阶段速览](docs/tensorrt-optimization-summary.md)。
-完整命令、候选 patch、provenance 和原始证据边界见 [完整实验记录](docs/tensorrt-optimization.md)。
+本轮已按 P0 C++ direct runtime、P1 `lm_head`/INT4 GEMV-GEMM、P2 dynamic batching、
+P3 paged KV 顺序执行：P0 已完成 direct benchmark 复验；P1 已完成 Nsight/Inspector 热点
+复核但没有新的稳定 kernel 候选；P2 已修复 active-batch eviction、sampling indices
+compact 和空 batch cache compact，新增单 worker bounded native microbatch scheduler，并在
+板端重编译后完成 max batch=4 的 batch=1/4 低层 smoke；HTTP c=2、c=4 三次重复均为
+60/60 成功，c=4 的 100 请求 soak 为 100/100 成功，aggregate output tok/s 为
+`27.5115/41.0209/40.2069`，已补一轮 RAM/SWAP/GPU/功耗/温度 telemetry，但因缺少同口径
+ baseline telemetry 暂不切换默认 runtime；P3 已在固定 v0.9.1 checkout 上完成最小
+builder/plugin/runtime backport，独立 paged engine 已通过 batch=1/4 prefill/decode smoke 和
+3×20 低层复验，显式记录 `maxKVPoolPages=32`、`tokens_per_page=128` 与 page table contract。
+数值 parity、HTTP paged scheduler、Nsight route 和 100 次 soak 仍未完成，因此不替换默认
+level0/level1 engine。对应的可执行入口和验收边界见
+[`jetson_orin_nano_priority_v1.json`](configs/tensorrt/jetson_orin_nano_priority_v1.json)。
+完整命令、候选 patch、provenance 和原始证据边界见 [完整实验记录](docs/tensorrt-optimization.md)，
+P2/P3 的实现细节见 [dynamic batching 与 paged KV 实施记录](docs/tensorrt-dynamic-batching-paged-kv.md)。
 
 ## 项目结构
 
@@ -168,11 +181,12 @@ reports/             # StudyReport 和运行证据，本地生成
 models/              # 本地模型权重，默认不进入 Git
 ```
 
-工作区约定：`src/`、`scripts/`、`configs/`、`patches/`、`tests/` 和 `docs/` 是可审阅的项目
-实现、实验入口和说明；`models/`、`data/raw/`、`data/processed/`、`artifacts/`、`reports/`
-和两个 `.venv/` 目录是本地输入或生成物，不作为源码层级互相引用。`reports/` 保留实验事实，
-`artifacts/` 保留模型、ONNX、engine 和传输包；清理时先依据配置/报告引用关系，再删除临时包，
-不把可复现实验所需的证据误删为“中间产物”。
+工作区约定：`src/`、`scripts/`、`configs/`、`tests/` 和 `docs/` 是可审阅的项目实现、实验
+入口和说明；`patches/` 是固定 Edge-LLM checkout 的本地候选 patch cache，当前不随仓库版本化，
+只通过 patch SHA、源码 revision 和 provenance 记录实验身份。`models/`、`data/raw/`、
+`data/processed/`、`artifacts/`、`reports/` 和两个 `.venv/` 目录是本地输入或生成物，不作为
+源码层级互相引用。`reports/` 保留实验事实，`artifacts/` 保留模型、ONNX、engine 和传输包；
+清理时先依据配置/报告引用关系，再删除临时包，不把可复现实验所需的证据误删为“中间产物”。
 
 核心接口：
 
@@ -211,14 +225,22 @@ $env:PYTHONPATH = "src"
 
 使用已训练 LoRA 时增加 `--adapter-path <adapter-directory>`；使用 Jetson Edge-LLM
 HTTP runtime 时将 `--runtime` 改为 `tensorrt_edge_llm_http`，并提供 `--edge-url`。
+云侧 vLLM 使用 `--runtime vllm_http`、`--vllm-url` 和可选 `--api-key-env`；配置化
+PS20 研究模板见 `configs/studies/server_vllm_http_ps20_pilot.example.json`。云端模型服务
+必须加载与 study 中 `model_revision` 相同的不可变模型版本。vLLM HTTP 的 TTFT 是客户端
+观测值，会包含网络与服务排队时间。
 
 ### 运行配置化 Study
 
 ```powershell
 $env:PYTHONPATH = "src"
+Copy-Item configs\studies\server_vllm_http_ps20_pilot.example.json `
+  configs\studies\server_vllm_http_ps20_pilot.json
 & ".\.venv\Scripts\python.exe" -m parksight_vlm.app.run_study `
-  --config configs\studies\server_transformers_base_ps20_pilot.json
+  --config configs\studies\server_vllm_http_ps20_pilot.json
 ```
+
+运行前需在复制出的配置中填入实际的 vLLM 版本、服务地址和部署配置。
 
 Study 会将完整报告写入配置指定的 `reports/` 路径，包含 JSON、风险、事件、时延、
 内存和失败归因。Jetson 研究使用 `configs/studies/` 中对应的 Edge-LLM 配置，并在
@@ -242,13 +264,11 @@ $env:PYTHONPATH = "src"
 ## 文档入口
 
 - [当前实现状态](docs/status.md)
-- [项目进展](docs/progress.md)
-- [完整执行记录](docs/execution-report.md)
 - [系统架构](docs/architecture.md)
 - [数据说明](docs/data.md)
 - [评测口径](docs/evaluation.md)
 - [操作入口](docs/operations.md)
+- [数据集与 LoRA 优化方案](docs/dataset-and-finetuning-roadmap.md)
 - [Edge-LLM 部署](docs/edgellm-deployment.md)
 - [TensorRT 优化阶段速览](docs/tensorrt-optimization-summary.md)
 - [TensorRT 优化完整实验记录](docs/tensorrt-optimization.md)
-- [项目记录](docs/personal_record.md)

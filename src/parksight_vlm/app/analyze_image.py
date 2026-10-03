@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int: # 当 argv=None 时，argparse �
         default=Path("configs/workloads/parking_risk_v1.json"),
     )
     parser.add_argument(
-        "--runtime", choices=("transformers", "tensorrt_edge_llm_http"), required=True
+        "--runtime",
+        choices=("transformers", "tensorrt_edge_llm_http", "vllm_http"),
+        required=True,
     )
     parser.add_argument("--backend-revision", required=True)
     parser.add_argument("--model-id", default="Qwen/Qwen3-VL-2B-Instruct")
@@ -49,6 +51,9 @@ def main(argv: list[str] | None = None) -> int: # 当 argv=None 时，argparse �
     parser.add_argument("--attn-implementation", default="sdpa")
     parser.add_argument("--adapter-path")
     parser.add_argument("--edge-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--vllm-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--vllm-model-name")
+    parser.add_argument("--api-key-env")
     args = parser.parse_args(argv)
 
     image_path = args.image.resolve()
@@ -64,8 +69,20 @@ def main(argv: list[str] | None = None) -> int: # 当 argv=None 时，argparse �
         )
         if args.adapter_path is not None:
             options["adapter_path"] = args.adapter_path
-    else:
+    elif args.runtime == "tensorrt_edge_llm_http":
         options["base_url"] = args.edge_url
+    else:
+        options.update(
+            {
+                "base_url": args.vllm_url,
+                "model_name": args.vllm_model_name or args.model_id,
+                "json_mode": True,
+                "stream_responses": True,
+                "reuse_http_connection": True,
+            }
+        )
+        if args.api_key_env is not None:
+            options["api_key_env"] = args.api_key_env
     runtime = build_runtime(
         RuntimeConfig(
             backend=args.runtime,

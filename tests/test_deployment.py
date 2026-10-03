@@ -653,6 +653,7 @@ class DeploymentTests(unittest.TestCase):
             {
                 "engine_dir": str(Path("/work/engines/llm")),
                 "visual_engine_dir": str(Path("/work/engines/visual")),
+                "max_batch_size": 1,
             },
         )
         self.assertEqual(calls["serve"], {"host": "127.0.0.1", "port": 8000})

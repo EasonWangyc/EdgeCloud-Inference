@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import inspect
 import json
 import subprocess
@@ -11,6 +10,8 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+
+from parksight_vlm.tensorrt import sha256_file
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
@@ -30,14 +31,6 @@ def _iter_texts(records: list[dict[str, Any]]) -> Iterator[str]:
         if not isinstance(text, str) or not text.strip():
             raise ValueError(f"calibration row {index} requires non-empty text")
         yield text
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _git_revision(repository: Path) -> str:
@@ -175,7 +168,7 @@ def main() -> int:
         "calibration_rows": args.num_samples,
         "calibration_batch_size": args.calibration_batch_size,
         "logits_to_keep": args.logits_to_keep,
-        "calibration_sha256": _sha256(dataset_path),
+        "calibration_sha256": sha256_file(dataset_path),
         "calibration_workload_identity": calibration_workload_identity,
         "edge_llm_revision": actual_revision,
     }

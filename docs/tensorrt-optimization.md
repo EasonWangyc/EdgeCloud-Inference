@@ -90,7 +90,7 @@ sidecar 的设备字段和每个 BuilderConfig 字段会在 `llm_build` 启动�
 ```bash
 git -C /home/ubuntu/TensorRT-Edge-LLM apply \
   /home/ubuntu/JetsonVLM/patches/tensorrt-edge-llm/0012-configurable-timing-cache.patch
-python3 scripts/build_edgellm_vlm_engines.py \
+PYTHONPATH=src python3 scripts/build_edgellm_vlm_engines.py \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --expected-revision 7f061f21f0a581ba234a1e233c9315b89d8e47d6 \
   --onnx-root artifacts/onnx/qwen3_vl_2b_int4_awq_n128 \
@@ -836,7 +836,7 @@ Edge-LLM revision、校准 workload、样本数和 `lm_head_precision`，同时�
 | FMHA head_dim=128 tiled | `0043-fmha-head128-tiled-candidate.patch` 仅在 `SM87 + head_dim=128 + S>64` 且显式设置环境变量时，将现有 non-tiled FMHA 选择切换为已编译 tiled cubin；矩阵见 `configs/tensorrt/jetson_orin_nano_int4_fmha_runtime_v1.json` | 直接针对当前约 70.7 ms 的 FMHA 类别做 kernel 选择 A/B；tiled cubin shared memory 为 81,920 bytes，可能减少长序列 tile 量化损失，也可能因 occupancy 变慢；默认路径和其他 head/SM 不变 | 同一 engine/workload 的 control/candidate A/B、FMHA kernel 名称与时间、TTFT/prefill/E2E、显存和 soak |
 | FMHA head_dim=64 tiled | `0047-fmha-head64-tiled-candidate.patch` 仅在 `SM87 + head_dim=64 + S>64` 且显式设置 `EDGELLM_FMHA_FORCE_GRANULAR_TILING_D64=1` 时，强制走 granular/tiled FMHA；默认启发式和其他 head/SM 不变 | 候选 plugin 已在隔离 worktree 编译，服务日志确认实际进入 forced tiled 分支；但 `S=1444` 功能 smoke 抛出 `There must be one kernel to implement the MHA` 并导致服务 abort，功能 gate 失败，未采集有效 latency | 保留 plugin SHA、运行时错误和正式 engine 未修改证据；若继续研究，先为该 shape 找到可用的 D64 tiled kernel 或恢复 shape 选择条件，再做数值对齐、TTFT/prefill/E2E、显存、功耗、温度和 soak |
 | 视觉 engine builder level | `build_qwen3_vl_2b_fp16_visual_engine.json` 为 level1；opt2/opt3 只改变 visual builder level，LLM engine、ONNX、workspace 和 image-token profile 不变 | level2/3 已在 Jetson 构建，3 请求 E2E p50 比 level1 低约 `12.65%/12.75%`，但生成长度从 `59` 变为 `51` tokens 且完整输出改变，功能/数值对齐失败；不能将该信号称为有效 builder 加速 | 先定位 visual engine level2/3 的数值差异和停止条件变化，再以同一输出/质量口径做严格 A/B；补充 Engine Inspector、FMHA kernel 时间、TTFT/E2E、峰值内存和 soak |
-| paged KV cache | NVIDIA v0.9.1 release note 已列出 paged KV-cache prefill/paged XQA decode；当前项目 engine runtime summary 为 `usePagedKVCache=false`，所以本次 baseline 仍是 contiguous KV。固定 checkout 的 builder/pool/runtime symbols 及 attention plugin 的硬编码开关由 `scripts/audit_edgellm_kv_cache.py` 扫描，不能用 ABI 或 release note 代替实际 route 证据 | 当前 engine 未证明使用 paged KV，也不能写成 v0.9.1 完全不支持；若固定 checkout 没有 builder pool 参数且 plugin 硬编码关闭，则 paged 路径在该 checkout 未接通 | 已新增独立 `i768/k1024/level1` 兼容性探针，尝试传入 `--maxKVPoolPages 16`，不覆盖正式 engine；审计不通过时在构建前停止。只有完整路径暴露后，才继续验证 page size、pool capacity、page table、地址校验、动态 batch、容量、数值、decode/E2E 和 soak；参考 [v0.9.1 release discussion](https://github.com/NVIDIA/TensorRT-Edge-LLM/discussions/138) 与 [builder](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/examples/llm/llm_build.cpp) |
+| paged KV cache | 默认 level0/level1 仍使用 contiguous KV；独立 P3 candidate 已在固定 v0.9.1 checkout 接入 `maxKVPoolPages=32`、`kv_page_table`、paged pool、prefill gather、KV 写入和 decode XQA `pageList/tokensPerPage` | paged engine 已 build；batch=1/4 prefill/decode exit 0 且 CUDA Graph capture 成功。短 workload 下 batch=4 aggregate decode 为 `90.7376 tok/s`，dense control 为 `92.2316 tok/s`，暂未证明单请求速度收益 | 保留独立 paged engine/provenance；后续完成 dense-vs-paged 数值 parity、page allocate/reclaim 计数、Engine Inspector/Nsight route、HTTP scheduler 和 100 次 soak 后再进入正式性能矩阵；参考 [v0.9.1 release discussion](https://github.com/NVIDIA/TensorRT-Edge-LLM/discussions/138) 与 [builder](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/examples/llm/llm_build.cpp) |
 | speculative decoding / MTP / EAGLE | Edge-LLM 源码存在 `spec_decode_type`、draft/base engine 和 acceptance 统计接口；当前 health 结果为 `speculative_decoding=false` | 当前运行未启用；源码接口不等于当前 engine 使用 | 独立 draft model/strategy、base+draft engine 及 acceptance trace |
 | FP8 KV cache | 导出侧支持 `--kv_cache_quantization fp8`，runtime config 使用 `kv_cache_dtype=fp8`，attention plugin 还要求 `enable_fp8_kv_cache` 与 `[q,k,v]` `qkv_scales`；当前 XQA 源码对 FP8 KV 有 `smVersion>=89` 检查 | 当前 INT4 AWQ provenance 为 KV cache quantization `none`；Jetson Orin Nano 为 SM87，因此当前 XQA 路径不满足该源码条件 | 若目标分支提供其他 FP8-KV 路径，仍需在目标板独立验证质量、显存、decode 和插件日志；不能把导出参数等同于 engine 已启用 |
 | FP8 / NVFP4 weight | 当前为 INT4 AWQ；TensorRT 10.3 兼容补丁禁用 FP4 plugin format | 本板端路径未使用 FP8/NVFP4 weight | 更换满足版本与硬件条件的独立 engine |
@@ -978,7 +978,7 @@ worktree revision、patch SHA、plugin SHA 和 engine SHA。`0045` 不应执行�
 engine 的 builder level：
 
 ```bash
-python3 scripts/build_edgellm_vlm_engines.py \
+PYTHONPATH=src python3 scripts/build_edgellm_vlm_engines.py \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --expected-revision 7f061f21f0a581ba234a1e233c9315b89d8e47d6 \
   --onnx-root artifacts/onnx/qwen3_vl_2b_fp16 \

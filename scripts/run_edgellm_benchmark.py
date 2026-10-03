@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import inspect
 import json
 import threading
 import time
@@ -14,6 +15,35 @@ from typing import Any
 from parksight_vlm.casebook import DatasetSplit, ParkingCase
 from parksight_vlm.inference.edge_llm import EdgeLlmHttpBackend
 from parksight_vlm.workload import FrozenWorkload
+
+
+def build_http_backend(
+    *,
+    endpoint: str,
+    model_name: str,
+    timeout_seconds: float,
+    stream_responses: bool,
+    reuse_http_connection: bool,
+) -> EdgeLlmHttpBackend:
+    """按板端 backend 实际接口构造客户端，兼容旧版 Jetson checkout。"""
+    parameters = inspect.signature(EdgeLlmHttpBackend).parameters
+    kwargs: dict[str, object] = {
+        "base_url": endpoint,
+        "model_name": model_name,
+        "timeout_seconds": timeout_seconds,
+    }
+    optional_kwargs = {
+        "stream_responses": stream_responses,
+        "reuse_http_connection": reuse_http_connection,
+    }
+    kwargs.update(
+        {
+            name: value
+            for name, value in optional_kwargs.items()
+            if name in parameters
+        }
+    )
+    return EdgeLlmHttpBackend(**kwargs)
 
 
 def load_benchmark_cases(
@@ -360,8 +390,8 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
     )
     workload = FrozenWorkload.load(args.workload)
-    backend = EdgeLlmHttpBackend(
-        base_url=args.endpoint,
+    backend = build_http_backend(
+        endpoint=args.endpoint,
         model_name=args.model_name,
         timeout_seconds=args.timeout_seconds,
         stream_responses=not args.no_stream_responses,
@@ -369,8 +399,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def create_backend() -> EdgeLlmHttpBackend:
-        return EdgeLlmHttpBackend(
-            base_url=args.endpoint,
+        return build_http_backend(
+            endpoint=args.endpoint,
             model_name=args.model_name,
             timeout_seconds=args.timeout_seconds,
             stream_responses=not args.no_stream_responses,

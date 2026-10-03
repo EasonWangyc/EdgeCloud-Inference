@@ -7,7 +7,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Iterator, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from parksight_vlm.workload import FrozenWorkload
@@ -22,8 +22,8 @@ class EdgeLlmBackend(Protocol):
         """调用 engine 并返回原始输出和实测事实。"""
 
 
-class EdgeLlmHttpBackend:
-    """实验性 Edge-LLM OpenAI-compatible server 客户端。"""
+class OpenAICompatibleHttpBackend:
+    """OpenAI-compatible Chat Completions 的共享 HTTP/SSE 传输层。"""
 
     def __init__(
         self,
@@ -33,21 +33,31 @@ class EdgeLlmHttpBackend:
         timeout_seconds: float = 120.0,
         stream_responses: bool = True,
         reuse_http_connection: bool = False,
+        api_key: str | None = None,
     ) -> None:
         parsed_url = urlsplit(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("base_url must be an absolute http(s) URL")
-        endpoint_path = (parsed_url.path.rstrip("/") or "") + "/v1/chat/completions"
-        if parsed_url.query:
-            endpoint_path += "?" + parsed_url.query
-        self._endpoint = base_url.rstrip("/") + "/v1/chat/completions"
+        base_path = parsed_url.path.rstrip("/")
+        if base_path.endswith("/v1/chat/completions"):
+            endpoint_path = base_path
+        elif base_path.endswith("/v1"):
+            endpoint_path = base_path + "/chat/completions"
+        else:
+            endpoint_path = base_path + "/v1/chat/completions"
+        self._endpoint = urlunsplit(
+            (parsed_url.scheme, parsed_url.netloc, endpoint_path, parsed_url.query, "")
+        )
+        self._http_endpoint_path = urlunsplit(
+            ("", "", endpoint_path, parsed_url.query, "")
+        )
         self._http_scheme = parsed_url.scheme
         self._http_host = parsed_url.netloc
-        self._http_endpoint_path = endpoint_path
         self._model_name = model_name
         self._timeout_seconds = timeout_seconds
         self._stream_responses = stream_responses
         self._reuse_http_connection = reuse_http_connection
+        self._api_key = api_key
         self._http_connection: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
 
     def close(self) -> None:
@@ -71,13 +81,16 @@ class EdgeLlmHttpBackend:
             workload=workload,
             stream=self._stream_responses,
         )
+        headers = {
+            "Accept": "text/event-stream" if self._stream_responses else "application/json",
+            "Content-Type": "application/json",
+        }
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         request = Request(
             self._endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Accept": "text/event-stream" if self._stream_responses else "application/json",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         request_build_ms = (time.perf_counter() - request_build_start) * 1000.0
@@ -92,7 +105,9 @@ class EdgeLlmHttpBackend:
             status = getattr(response, "status", 200)
             if isinstance(status, int) and not 200 <= status < 300:
                 self.close()
-                raise RuntimeError(f"Edge-LLM HTTP request failed with status {status}")
+                raise RuntimeError(
+                    f"OpenAI-compatible inference HTTP request failed with status {status}"
+                )
             response_will_close = bool(getattr(response, "will_close", False))
             if self._stream_responses and self.is_event_stream_response(response):
                 response_payload, measured_ttft_ms, stream_timings = (
@@ -109,9 +124,9 @@ class EdgeLlmHttpBackend:
         try:
             raw_output = response_payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("Edge-LLM response has no assistant content") from error
+            raise RuntimeError("OpenAI-compatible response has no assistant content") from error
         if not isinstance(raw_output, str):
-            raise RuntimeError("Edge-LLM assistant content must be a string")
+            raise RuntimeError("OpenAI-compatible assistant content must be a string")
         usage = response_payload.get("usage", {})
         output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
         if not isinstance(output_tokens, int):
@@ -285,7 +300,7 @@ class EdgeLlmHttpBackend:
 
     @staticmethod
     def parse_server_timings(payload: dict[str, object]) -> dict[str, float]:
-        """解析 Edge-LLM 扩展返回的真实服务端阶段时延。
+        """解析服务端扩展返回的实际阶段时延。
 
         标准 OpenAI-compatible 响应不包含这些字段，因此缺失时返回空字典；
         已知字段若存在但类型错误则拒绝该响应，避免将无效数字写入证据。
@@ -296,7 +311,7 @@ class EdgeLlmHttpBackend:
         if raw_timings is None:
             return {}
         if not isinstance(raw_timings, dict):
-            raise RuntimeError("Edge-LLM server timings must be an object")
+            raise RuntimeError("server timings must be an object")
         aliases = {
             "ttft_ms": "time_to_first_token_ms",
             "e2e_ms": "backend_end_to_end_ms",
@@ -317,7 +332,7 @@ class EdgeLlmHttpBackend:
             if normalized_name not in supported:
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-                raise RuntimeError(f"Edge-LLM server timing must be non-negative: {name}")
+                raise RuntimeError(f"server timing must be non-negative: {name}")
             parsed[normalized_name] = float(value)
         return parsed
 
@@ -328,7 +343,21 @@ class EdgeLlmHttpBackend:
         workload: FrozenWorkload,
         stream: bool | None = None,
     ) -> dict[str, object]:
-        """构造与真实 HTTP 调用完全相同的可审计请求。"""
+        """构造后端请求；具体消息格式由协议适配器实现。"""
+        raise NotImplementedError
+
+
+class EdgeLlmHttpBackend(OpenAICompatibleHttpBackend):
+    """TensorRT Edge-LLM server 的 OpenAI-compatible HTTP Adapter。"""
+
+    def build_request_payload(
+        self,
+        *,
+        image_path: Path,
+        workload: FrozenWorkload,
+        stream: bool | None = None,
+    ) -> dict[str, object]:
+        """构造 Edge-LLM server 当前接受的可审计请求体。"""
         payload: dict[str, object] = {
             "model": self._model_name,
             "messages": [

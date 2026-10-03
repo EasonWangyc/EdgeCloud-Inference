@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any
+
+from parksight_vlm.tensorrt import sha256_file
 
 
 _DURATION_FIELD = "Duration (ns)"
@@ -93,7 +94,7 @@ def summarize_trace(path: Path | str, *, label: str | None = None) -> dict[str, 
         "schema_version": "parksight_tensorrt_nsight_trace_summary_v1",
         "input": {
             "path": str(trace_path),
-            "sha256": _sha256_file(trace_path),
+            "sha256": sha256_file(trace_path),
             "label": label,
         },
         "trace": {
@@ -169,14 +170,6 @@ def _percentile(values: list[float], quantile: float) -> float:
     upper = min(lower + 1, len(values) - 1)
     fraction = position - lower
     return values[lower] + (values[upper] - values[lower]) * fraction
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def main(argv: list[str] | None = None) -> int:

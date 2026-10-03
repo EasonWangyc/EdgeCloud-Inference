@@ -18,10 +18,11 @@
 | 实验 | 主要结论 | 不用于 |
 | --- | --- | --- |
 | 服务器 Transformers | 模型、prompt、严格 JSON 和任务质量的正确性参考 | Jetson 部署性能结论 |
+| 服务器 vLLM | 云侧服务后端的模型质量、请求时延和失败研究 | Jetson 部署性能结论；纯模型服务端 TTFT（除非服务端显式上报） |
 | Jetson Transformers FP16 | 原生框架在目标板上的可运行性、OOM、质量和性能基线 | 服务器训练吞吐比较 |
 | Jetson TensorRT Edge-LLM FP16/INT4 | 最终部署质量与板端性能 | 替代服务器误差分析 |
 
-质量一致性可以在三个 runtime 间比较，但必须固定模型 revision、workload 和数据集。
+质量一致性可以在不同 runtime 间比较，但必须固定模型 revision、workload 和数据集。
 时延、内存、功耗和温度的加速结论只比较 Jetson Transformers 与 Jetson TensorRT
 Edge-LLM。服务器 GPU 的性能数值单独保存，不进入 Jetson 加速比。
 
@@ -63,8 +64,13 @@ Jetson Transformers FP16 如果无法加载、发生 OOM 或依赖不兼容，�
 - Transformers profile 可记录 `vision_encode_ms`、`prefill_ms`、`decode_ms` 和
   `time_to_first_token_ms`；Edge-LLM HTTP adapter 默认请求流式响应，并从首个非空
   `delta.content` 到达时记录客户端观测 TTFT，同时记录请求构造时间和
-  `http_round_trip_ms`。将 `runtime.options.stream_responses` 设为 `false` 可保留非流式
+  `http_round_trip_ms`。vLLM HTTP Adapter 使用 OpenAI 图像 data URI、可选 Bearer API key
+  环境变量和 JSON mode；JSON mode 只约束 JSON 语法，最终仍由 `ParkingAssessment` 做 schema
+  校验。vLLM 侧若未提供服务端阶段时延，TTFT 表示客户端发出请求到收到首个非空内容的时延，
+  包含网络和服务排队，不代表纯模型 TTFT。将 `runtime.options.stream_responses` 设为 `false` 可保留非流式
   兼容路径；非流式响应只有在服务端显式返回时才记录 TTFT，不能从完整 HTTP RTT 推算。
+  vLLM 云端与 Jetson Edge-LLM 之间的时延包含不同硬件和网络条件，不作为纯框架性能对照；
+  如需隔离服务框架差异，应在同一服务器、同一模型与冻结 workload 上比较 Transformers 与 vLLM。
 
 ## 失败类别
 

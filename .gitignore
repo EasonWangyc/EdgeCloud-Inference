@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 .venv/
+.migration/
 .casebook-test-tmp/
 
 # Local inputs and generated artifacts
@@ -19,6 +20,9 @@ models/
 # Jetson and profiler outputs
 tegrastats*.log
 nsys-rep/
+
+# Local agent/editor settings
+.claude/settings.local.json
 
 # TensorRT-LLM patch cache (generated, not tracked)
 patches/

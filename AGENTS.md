@@ -1,4 +1,4 @@
-# ParkSight-VLM 仓库指南
+# EdgeCloud-Inference 仓库指南
 
 ## 项目范围
 

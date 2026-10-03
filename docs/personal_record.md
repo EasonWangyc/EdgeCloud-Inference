@@ -225,12 +225,9 @@ ParkingCase -> RiskRuntime -> InferenceRecord -> StudyReport
 | `evidence` | string 数组 | 图像证据（可见线索） | 必须非空数组、不重复 |
 | `driver_advice` | string 数组 | 驾驶建议 | 必须非空数组、元素在 5 个枚举内、不重复 |
 
-6 个风险事件枚举：`vru_near_maneuver_path`（行人接近路径）/ `vehicle_near_maneuver_path`（车辆接近路径）/
-`fixed_obstacle_near_path`（固定障碍物）/ `narrow_passage`（狭窄通道）/ `visibility_occlusion`（可见性遮挡）/
-`parking_space_conflict`（车位冲突）。
+6 个风险事件枚举：`vru_near_maneuver_path`（行人接近路径）/ `vehicle_near_maneuver_path`（车辆接近路径）/`fixed_obstacle_near_path`（固定障碍物）/`narrow_passage`（狭窄通道）/ `visibility_occlusion`（可见性遮挡）/`parking_space_conflict`（车位冲突）。
 
-5 个驾驶建议枚举：`maintain_observation`（保持观察）/ `slow_down`（减速）/ `yield`（让行）/
-`prepare_to_stop`（随时准备停车，注意，不是泊车）/ `change_maneuver_when_safe`（安全时改变操作）。
+5 个驾驶建议枚举：`maintain_observation`（保持观察）/ `slow_down`（减速）/ `yield`（让行）/`prepare_to_stop`（随时准备停车，注意，不是泊车）/`change_maneuver_when_safe`（安全时改变操作）。
 
 #### 数据文件 JSON 格式
 
@@ -320,10 +317,20 @@ F1        = 2·P·R / (P+R)    两者的调和平均
 | run7 | 模型已生成 JSON，但严格解析失败                  | `events` 使用中文自由文本，`evidence`/`driver_advice` 还是字符串 |
 | run8 | `failure=null`，严格 JSON 成功                   | 修复消息格式并加强 prompt 的英文 snake_case 枚举约束         |
 
+> run6针对消息结构的关键修复：
+
+```text
+system.content = [{"type": "text", "text": ...}]
+user.content = [
+    {"type": "image", "image": image},
+    {"type": "text", "text": ...},
+]
+```
+
 几个关键设计：
 
-- 懒加载：`_ensure_loaded()`只在首次`generate`时才加载模型，CLI启动、配置校验、无硬件测试都不需要模型权重
-- `_require_cuda_architecture`进行CUDA架构预检
+1. 懒加载：`_ensure_loaded()`只在首次`generate`时才加载模型，CLI启动、配置校验、无硬件测试都不需要模型权重
+2. `_require_cuda_architecture`进行CUDA架构预检
 
 ```python
 required = f"sm_{major}{minor}"   # Orin Nano → sm_87
@@ -333,7 +340,7 @@ if required not in torch.cuda.get_arch_list():
 
 这里发现了通用aarch64 torch wheel只包含`sm_80/sm_90`，而实际需要`sm_87`。
 
-- 冻结workload：`max_new_tokens=256`、`do_sample=False`（贪心解码，可复现）、输入 448×448、prompt 严格约束输出 JSON 枚举等
+3. 冻结workload：`max_new_tokens=256`、`do_sample=False`（贪心解码，可复现）、输入 448×448、prompt 严格约束输出 JSON 枚举等
 
 ### 2.2 板端基线FP16 VL Transformer推理实现
 
@@ -411,6 +418,10 @@ LLM 骨干
 | `max_position_embeddings` | 262144 | 极长上下文支持                                               |
 | `tie_word_embeddings`     | true   | **embedding 与 lm_head 共享权重**                            |
 | `attention_bias`          | false  | 注意力无 bias                                                |
+
+#### 冻结workload
+
+配置实验身份的入口是[run_study.py](../src/parksight_vlm/app/run_study.py)，其中调用了`FrozenWorkload.load()`，在[workload.py](../src/parksight_vlm/workload.py)中冻结`prompt`、`448×448输入尺寸`、`max_new_tokens=256`、`do_sample=false`、`6 个风险事件`、`5 个驾驶建议`、`schema version`等。
 
 #### 板端推理
 
@@ -496,7 +507,7 @@ timeout 1800s \
 
 #### GPU服务器导出TensorRT Edge-LLM ONNX
 
-选择[[AutoDL算力云](https://www.autodl.com/market/list)]平台的单卡RTX 4090 D作为服务器端，具体环境如下：
+选择[[AutoDL](https://www.autodl.com/market/list)]平台的单卡RTX 4090 D作为服务器端，具体环境如下：
 
 | 项目                              | 实测值                                                    |
 | --------------------------------- | --------------------------------------------------------- |
@@ -586,10 +597,10 @@ cmake --build . --parallel 2   # 低并行度！避免 8GB 板端编译 OOM
 编译产物如下：
 
 ```text
-build/libNvInfer_edgellm_plugin.so              	← TensorRT 插件（AttentionPlugin 等）
-build/examples/llm/llm_build                    	← LLM engine 构建器
-build/examples/llm/llm_inference                 	← LLM 推理示例
-build/examples/multimodal/visual_build           	← 视觉 engine 构建器
+build/libNvInfer_edgellm_plugin.so              ← TensorRT 插件（AttentionPlugin 等）
+build/examples/llm/llm_build                    ← LLM engine 构建器
+build/examples/llm/llm_inference                ← LLM 推理示例
+build/examples/multimodal/visual_build          ← 视觉 engine 构建器
 build/pybind/_edgellm_runtime.cpython-310-aarch64-linux-gnu.so  ← Python binding
 ```
 
@@ -957,3 +968,7 @@ peak CUDA memory: about 5.32 GiB
 ```
 
 人工标注解决了候选标签不能直接作为正式训练来源的问题；LoRA 训练恢复了部分风险等级和事件预测，但受样本规模与类别覆盖限制，质量仍不稳定。AWQ 量化完成了权重压缩和engine 构建，但当前实测只证明了格式、部署和部分资源指标，尚未证明相对 Jetson Transformers FP16 的综合性能优势。后续优化重点应转向 Edge-LLM 的 builder、kernel、weight streaming、KV cache、prefill/decode 和服务层开销，而不是继续把量化后的负向质量结果解释为模型能力提升。
+
+### 2.7 TensorRT Edge-LLM 链路性能优化
+
+考虑到数据集通用性和训练手段不足，下一步不准备做微调方面的优化，将目标放在系统链路的优化上。

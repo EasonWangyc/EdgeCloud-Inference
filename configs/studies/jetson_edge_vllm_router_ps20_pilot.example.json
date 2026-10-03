@@ -1,0 +1,80 @@
+{
+  "study_id": "jetson_edge_vllm_router_ps20_pilot",
+  "workload_path": "../workloads/parking_risk_v1.json",
+  "manifest_path": "../../data/manifests/ps20_pilot_v1.jsonl",
+  "annotations_path": "../../data/annotations/ps20_pilot_v1.jsonl",
+  "data_root": "../../data",
+  "output_path": "../../reports/jetson_edge_vllm_router_ps20_pilot.json",
+  "split": "test",
+  "repetitions": 1,
+  "power_mode": "edge-cloud-unspecified",
+  "runtime": {
+    "backend": "edge_vllm_router",
+    "backend_revision": "parksight-router-v1",
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "none",
+    "precision": "routed",
+    "options": {
+      "edge_runtime": {
+        "backend": "tensorrt_edge_llm_http",
+        "backend_revision": "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
+        "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+        "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+        "adapter_revision": "none",
+        "precision": "int4_awq",
+        "options": {
+          "base_url": "http://127.0.0.1:8000",
+          "model_name": "local",
+          "timeout_seconds": 180,
+          "stream_responses": true
+        }
+      },
+      "cloud_runtime": {
+        "backend": "vllm_http",
+        "backend_revision": "replace-with-installed-vllm-version",
+        "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+        "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+        "adapter_revision": "none",
+        "precision": "bf16",
+        "options": {
+          "base_url": "http://192.168.1.100:8000",
+          "model_name": "Qwen/Qwen3-VL-2B-Instruct",
+          "timeout_seconds": 180,
+          "stream_responses": true,
+          "reuse_http_connection": true,
+          "json_mode": true
+        }
+      },
+      "policy": {
+        "preference": "edge_first",
+        "min_edge_free_memory_mb": 1024,
+        "max_edge_temperature_c": 82,
+        "max_network_rtt_ms": 250,
+        "max_packet_loss_percent": 2,
+        "cloud_escalation_risk_levels": [
+          "high"
+        ],
+        "cloud_escalation_events": [
+          "vru_near_maneuver_path",
+          "parking_space_conflict"
+        ],
+        "fallback_on": [
+          "dependency_unavailable",
+          "json_parse_error",
+          "out_of_memory",
+          "timeout",
+          "unsupported_operator",
+          "runtime_error"
+        ]
+      },
+      "signals": {
+        "cloud_allowed": false,
+        "network_available": true,
+        "edge_available": true,
+        "cloud_available": false
+      },
+      "health_probe_timeout_seconds": 1
+    }
+  }
+}

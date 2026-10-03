@@ -1,0 +1,83 @@
+{
+  "schema_version": "parksight_tensorrt_priority_plan_v1",
+  "experiment_id": "jetson_orin_nano_int4_performance_priority_v1",
+  "fixed": {
+    "device": "Jetson Orin Nano Super SM87",
+    "power_mode": "15W_MODE_0",
+    "edge_llm": "v0.9.1",
+    "precision": "INT4 AWQ LLM backbone with FP16 lm_head",
+    "profile": "batch=1,i768,k1024",
+    "workspace_mib": 1024,
+    "cuda_graph": true,
+    "weight_streaming": false
+  },
+  "priorities": [
+    {
+      "id": "P0",
+      "name": "cpp_direct_runtime_benchmark",
+      "status": "board_revalidated_completed",
+      "entrypoint": "scripts/run_edgellm_direct_benchmark.py",
+      "evidence": [
+        "prefill CSV",
+        "decode CSV",
+        "full llm_bench log",
+        "command and engine provenance"
+      ],
+      "acceptance": "同一 engine、同一 workload 下可重复采集 prefill/decode，并可被 benchmark_edgellm.py 汇总"
+    },
+    {
+      "id": "P1",
+      "name": "lm_head_and_int4_gemv_gemm",
+      "status": "nsight_hotspot_revalidated_candidate_ab_pending",
+      "entrypoints": [
+        "scripts/build_edgellm_vlm_engines.py",
+        "configs/tensorrt/jetson_orin_nano_int4_gemv_runtime_v1.json",
+        "scripts/inspect_tensorrt_engine.py",
+        "scripts/summarize_tensorrt_nsight_trace.py"
+      ],
+      "acceptance": "分别对 lm_head tactic/shape、INT4 GEMV/GEMM 候选做 3 次低层 A/B，再做完整 VLM 和 soak"
+    },
+    {
+      "id": "P2",
+      "name": "dynamic_or_continuous_batching",
+      "status": "runtime_patch_and_native_http_microbatch_revalidated",
+      "entrypoint": "scripts/run_edgellm_concurrency_sweep.py",
+      "implementation": [
+        "D2D vanilla decoder token feedback for normal batch=1 decode",
+        "sampling indices compaction on batch eviction",
+        "skip empty-batch cache compaction and synchronization",
+        "single native runtime worker with bounded HTTP microbatch window",
+        "per-slot stream channels and non-stream response views for v0.9.1 pybind"
+      ],
+      "evidence": [
+        "batch=1/4 low-level smoke exit code 0",
+        "concurrency=2: 60/60 completed, aggregate 27.5115 tok/s",
+        "concurrency=4: 60/60 completed, aggregate 41.0209 tok/s",
+        "concurrency=4 soak: 100/100 completed, aggregate 40.2069 tok/s",
+        "server error scan: no HTTP 500, slots missing, graph race or native microbatch failure",
+        "telemetry sample: RAM 5636-5656/7619 MiB, SWAP 1555/3810 MiB, GR3D peak 99%, tj peak 58.187 C, VDD_IN peak 13680 mW"
+      ],
+      "acceptance": "已完成 batch=4 的请求级完成率、吞吐和 100 请求 soak；仍需补充独立的显存/RAM/swap telemetry 后再决定默认化"
+    },
+    {
+      "id": "P3",
+      "name": "paged_kv_cache",
+      "status": "v091_source_audited_backport_boundary_pending",
+      "entrypoint": "scripts/audit_edgellm_kv_cache.py",
+      "implementation": [
+        "builder/config: usePagedKVCache, tokensPerPage, maxKVPoolPages",
+        "attention plugin: page pool/page table bindings and paged FMHA/XQA route",
+        "runtime: page allocator, page table compaction, allocate/reclaim on admission and eviction",
+        "v0.10.x reference diff decomposed into a staged v0.9.1 backport; no cross-version copy applied"
+      ],
+      "acceptance": "源码审计确认 builder、attention plugin、runtime 三层均 wired，并通过 engine config、kernel 参数、数值 parity、动态 batch 和 soak 验证；当前 v0.9.1 未满足，禁止进入性能结论"
+    }
+  ],
+  "out_of_scope": [
+    "speculative_decoding",
+    "LoRA_or_fine_tuning",
+    "quality_metric_optimization",
+    "Edge-LLM_version_upgrade",
+    "server_GPU_comparison"
+  ]
+}

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
+
+from parksight_vlm.tensorrt import TensorRTValidationError, sha256_file as _sha256_file
 
 
 class PatchChainError(RuntimeError):
@@ -16,14 +17,10 @@ class PatchChainError(RuntimeError):
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as error:
+        return _sha256_file(path)
+    except TensorRTValidationError as error:
         raise PatchChainError(f"cannot read patch: {path}") from error
-    return digest.hexdigest()
 
 
 def check_patch_chain(

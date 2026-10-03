@@ -17,7 +17,7 @@ ParkingCaseCatalog -> ParkingCase -> RiskRuntime -> InferenceRecord -> StudyRunn
 | `inference` | `RiskRuntime.analyze(case, workload)` | `ParkingCase`、冻结工作负载 | `InferenceRecord` | 输入准备、Adapter 调用、输出解析、阶段计时与运行失败记录 |
 | `studies` | `StudyRunner.run(casebook, runtime, study)` | casebook、runtime、研究配置 | `StudyReport` | 推理记录归档、任务质量、性能分位数、环境快照与失败归因 |
 
-每个 Module 通过一个小 Interface 向调用方提供深度。`inference` 内部包含 `TransformersRuntime` 与 `EdgeLlmRuntime` 两个 Adapter。`studies` 通过 `RiskRuntime` Interface 运行两类 Adapter 的任务与性能研究。
+每个 Module 通过一个小 Interface 向调用方提供深度。`inference` 内部包含 `TransformersRuntime`、`EdgeLlmRuntime` 与 `VllmRuntime` 三个 Adapter。`studies` 通过 `RiskRuntime` Interface 运行不同后端的任务与性能研究。
 
 ## 对象关系
 
@@ -67,6 +67,7 @@ src/parksight_vlm/
     runtime.py        # RiskRuntime Interface、InferenceRecord 与失败类型
     transformers.py   # TransformersRuntime Adapter
     edge_llm.py       # EdgeLlmRuntime Adapter
+    vllm.py           # vLLM OpenAI-compatible HTTP Adapter
   studies/
     model.py          # Study 与 StudyReport
     runner.py         # StudyRunner
@@ -122,12 +123,26 @@ tests/
 | Study | 环境 | Runtime | 作用 | 性能比较 |
 | --- | --- | --- | --- | --- |
 | `transformers_base` | GPU 服务器 | Transformers | 正确性参考、完整质量研究和误差分析 | 不与 Jetson 时延直接比较 |
+| `server_vllm_http` | GPU 服务器 | vLLM HTTP | 云侧服务后端研究 | 记录云端请求时延；不与 Jetson 时延直接比较 |
+| `edge_vllm_router` | Jetson + 可访问的 GPU 服务 | Edge-LLM + vLLM HTTP | 按授权、健康状态和策略分发，并记录失败回退 | 报告端到端路径与回退；不将异构路径时延解释为框架 A/B |
 | `jetson_transformers_fp16` | Jetson | Transformers FP16 | 板端框架基线；保留成功、OOM 或依赖失败事实 | 与 Jetson Edge-LLM 同机比较 |
 | `edgellm_fp16` | Jetson | TensorRT Edge-LLM FP16 | 最终部署 FP16 基线 | 与 Jetson Transformers FP16 同机比较 |
 
-三个 study 必须冻结相同模型 revision、workload、输入尺寸、prompt、生成参数和测试集。
-服务器结果用于回答模型任务是否正确；Jetson Transformers 与 Jetson Edge-LLM 的
-同机结果用于回答部署优化带来的时延、内存、功耗和温度变化。
+跨后端质量对照必须冻结相同模型 revision、workload、输入尺寸、prompt、生成参数和测试集。
+服务器 Transformers 与 vLLM 的结果用于服务器侧模型任务和服务后端研究；Jetson
+Transformers 与 Jetson Edge-LLM 的同机结果用于回答部署优化带来的板端时延、内存、功耗
+和温度变化。不同设备间的时延不用于归因推理框架性能差异。
+
+`EdgeCloudRouterRuntime` 组合现有两个 HTTP Adapter。每次执行先获取
+`RoutingSignalsProvider` 快照：`cloud_allowed` 明确约束图片能否上传，HTTP 健康探测更新
+端/云服务可达状态，`RoutingPolicy` 选择 primary、按端侧初判对指定高风险场景升级云复核，
+并限制哪些失败可以回退。生成的
+`InferenceRecord.routing_decision` 保存策略、信号、尝试路径及失败类别，阶段时延包含
+路由开销。当前默认 provider 不采集温度、显存或链路质量遥测；缺失值不会被伪造成测量，
+需由设备/网络 provider 接入后才可用于资源门槛判断。
+
+实现和示例配置见 `src/parksight_vlm/inference/routing.py` 与
+`configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json`。
 
 ## 测试 seam
 

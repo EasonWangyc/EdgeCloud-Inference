@@ -35,6 +35,16 @@ _CHECKS: tuple[tuple[str, str, str], ...] = (
         "cpp",
         r"pageList|page_list|tokensPerPage|tokens_per_page",
     ),
+    (
+        "attention_plugin_paged_binding_symbols",
+        "cpp/plugins/attentionPlugin/attentionPlugin.cpp",
+        r"pageList|page_list|tokensPerPage|tokens_per_page|pagedKV|paged_kv",
+    ),
+    (
+        "runtime_page_allocator_symbols",
+        "cpp/runtime",
+        r"allocatePage|allocate_page|freePage|free_page|pageTable|page_table|pagePool|page_pool",
+    ),
 )
 
 _SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hh", ".hpp"}
@@ -105,16 +115,35 @@ def audit_kv_cache_source(
     runtime_has_paged_symbols = by_id["paged_kv_runtime_symbols"]["matched"]
     pool_has_paged_symbols = by_id["paged_kv_pool_symbols"]["matched"]
     xqa_has_page_symbols = by_id["paged_xqa_abi_symbols"]["matched"]
+    plugin_has_paged_bindings = by_id["attention_plugin_paged_binding_symbols"]["matched"]
+    runtime_has_page_allocator = by_id["runtime_page_allocator_symbols"]["matched"]
     attention_plugin_hardcodes_disabled = by_id[
         "attention_plugin_hardcodes_paged_kv_disabled"
     ]["matched"]
 
-    if attention_plugin_hardcodes_disabled and not builder_has_pool_option:
+    complete_source_path = all(
+        (
+            builder_has_pool_option,
+            runtime_has_paged_symbols,
+            pool_has_paged_symbols,
+            xqa_has_page_symbols,
+            plugin_has_paged_bindings,
+            runtime_has_page_allocator,
+        )
+    ) and not attention_plugin_hardcodes_disabled
+
+    if not complete_source_path and (
+        attention_plugin_hardcodes_disabled
+        or builder_has_pool_option
+        or runtime_has_paged_symbols
+        or pool_has_paged_symbols
+        or xqa_has_page_symbols
+        or plugin_has_paged_bindings
+        or runtime_has_page_allocator
+    ):
         conclusion = "paged_kv_not_wired_in_checkout"
-    elif builder_has_pool_option and runtime_has_paged_symbols and pool_has_paged_symbols:
+    elif complete_source_path:
         conclusion = "paged_kv_path_exposed_requires_runtime_validation"
-    elif runtime_has_paged_symbols or pool_has_paged_symbols or xqa_has_page_symbols:
-        conclusion = "paged_kv_source_evidence_incomplete"
     else:
         conclusion = "paged_kv_not_detected_in_checkout"
 
@@ -128,6 +157,9 @@ def audit_kv_cache_source(
             "runtime_has_paged_kv_symbols": runtime_has_paged_symbols,
             "pool_has_paged_kv_symbols": pool_has_paged_symbols,
             "xqa_has_page_symbols": xqa_has_page_symbols,
+            "attention_plugin_has_paged_bindings": plugin_has_paged_bindings,
+            "runtime_has_page_allocator": runtime_has_page_allocator,
+            "complete_source_path": complete_source_path,
             "attention_plugin_hardcodes_paged_kv_disabled": attention_plugin_hardcodes_disabled,
             "conclusion": conclusion,
         },

@@ -1,5 +1,28 @@
 # 当前实现状态
 
+## 2026-09-22 TensorRT P2 native microbatch revalidation and P3 paged-KV source boundary
+
+- 固定 Edge-LLM v0.9.1 checkout 的 max batch=4 engine 已确认可构建；上次失败属于请求级
+  active-batch/eviction 状态管理，不是 builder 不能生成 batch=4 engine。
+- 板端已应用并编译 runtime 修复：vanilla decoder 普通 batch=1 decode 使用 device-side
+  sampling indices，batch eviction 压缩 sampling indices，空 batch 跳过 base/draft cache
+  compact 和不必要的同步。重编译后低层 batch=1 为 `29.4693 ms`，batch=4 为 `43.7650 ms`，
+  两个进程均 exit code 0，batch=4 CUDA Graph capture 成功。
+- 旧 Python HTTP server 的并发调用会共享 VLM visual execution context；已在固定 checkout 的
+  server 层增加单 worker、2 ms admission window、最大 native batch=4 的 microbatch scheduler，
+  并让流式/非流式 route 共用 dispatch。v0.9.1 pybind 的可选字段和只读 finish reason 也已
+  做兼容处理。
+- 板端 c=2、c=4 各完成 3 次重复：均为 `60/60`，aggregate output tok/s 分别为 `27.5115`
+  和 `41.0209`；c=4 100 请求 soak 为 `100/100`、`40.2069 tok/s`。错误扫描未发现 HTTP500、
+  `slots missing`、`already loaded binary graph`、native microbatch failure；仍待补充显存/RAM/
+  swap telemetry，故不直接替换默认 runtime。
+- 新增 `docs/tensorrt-dynamic-batching-paged-kv.md`，将 P3 拆为 builder/config、AttentionPlugin
+  page pool/page table binding、runtime page allocator 和验证门禁。当前 checkout 虽有 paged
+  FMHA/XQA kernel 符号，但仍缺少完整 builder/plugin/runtime 接线；对照 v0.10.x 后确认该路径
+  伴随 page table、pool allocator 和 attention/runtime 大范围接口变化，固定 v0.9.1 暂不做
+  直接跨版本复制；审计 gate 已加强为同时要求 plugin paged binding 与 runtime page allocator，
+  不能仅凭 ABI 符号构建 paged engine。
+
 ## 2026-09-06 TensorRT INT4 GEMM CTA-N=256 Jetson compile and smoke validation
 
 - 在 Jetson Orin Nano、固定 Edge-LLM v0.9.1 revision `7f061f21f0a581ba234a1e233c9315b89d8e47d6`
@@ -1130,7 +1153,7 @@ INT4 均已完成相应的
 `ONNX -> engine -> Edge-LLM HTTP -> ParkSight Adapter -> InferenceRecord/StudyReport`
 板端实测。它不证明模型已经满足业务质量要求：当前主要误差已经从输出格式转为风险
 等级和领域事件判断，仍需扩大独立人工标注数据并修正 LoRA 与量化校准偏置。
-具体环境、命令和校验结果见 [`progress.md`](progress.md)。
+具体环境、命令和校验结果见 [`operations.md`](operations.md) 与 [`edgellm-deployment.md`](edgellm-deployment.md)。
 
 ## 尚未完成及证据边界
 
@@ -1157,7 +1180,7 @@ INT4 均已完成相应的
 - 临时 `/home/ubuntu/parksight-build.swap` 已启用但未写入 `fstab`；`Device or resource
   busy` 表示重复执行 `swapon`，不是启用失败。
 
-完整命令、结果和原始证据索引见 [`execution-report.md`](execution-report.md)。
+完整命令、结果和原始证据索引见 [`tensorrt-optimization.md`](tensorrt-optimization.md) 与本文件的当前状态记录。
 ## 2026-09-06 TensorRT visual builder level candidates
 
 - 现有 level0/level1 LLM 对比复用同一个视觉 engine；但 level1 trace 中视觉侧

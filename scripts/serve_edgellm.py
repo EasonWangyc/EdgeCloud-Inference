@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -11,6 +10,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from parksight_vlm.tensorrt import sha256_file
 
 
 def _resolve_engine_directories(
@@ -41,6 +42,7 @@ def serve_prebuilt_engines(
     visual_engine_root: Path | None = None,
     host: str,
     port: int,
+    http_max_batch_size: int = 1,
     cuda_graph: str | None = None,
     pin_optimization_profiles: bool | None = None,
     profile_switch_timing: bool | None = None,
@@ -93,7 +95,11 @@ def serve_prebuilt_engines(
         llm_engine_root=llm_engine_root,
         visual_engine_root=visual_engine_root,
     )
-    llm = LLM(engine_dir=str(llm_root), visual_engine_dir=str(visual_root))
+    llm = LLM(
+        engine_dir=str(llm_root),
+        visual_engine_dir=str(visual_root),
+        max_batch_size=http_max_batch_size,
+    )
     llm.serve(host=host, port=port)
 
 
@@ -235,10 +241,6 @@ def _artifact_identity(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"engine file not found: {path.resolve()}")
     resolved_path = path.resolve()
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
     return {
         # Keep both names: the resolved path is the file actually hashed and
         # loaded, while requested_path preserves symlink-based deployment
@@ -248,7 +250,7 @@ def _artifact_identity(path: Path) -> dict[str, Any]:
         "resolved_path": str(resolved_path),
         "filename": path.name,
         "size_bytes": path.stat().st_size,
-        "sha256": digest.hexdigest(),
+        "sha256": sha256_file(path),
     }
 
 
@@ -259,16 +261,12 @@ def _runtime_patch_identities(paths: tuple[Path, ...]) -> list[dict[str, Any]]:
         resolved_path = path.resolve()
         if not resolved_path.is_file():
             raise FileNotFoundError(f"runtime patch not found: {resolved_path}")
-        digest = hashlib.sha256()
-        with resolved_path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
         identities.append(
             {
                 "path": str(resolved_path),
                 "filename": resolved_path.name,
                 "size_bytes": resolved_path.stat().st_size,
-                "sha256": digest.hexdigest(),
+                "sha256": sha256_file(resolved_path),
             }
         )
     return identities
@@ -365,6 +363,16 @@ def _option_state(value: bool | None) -> str:
     return "default"
 
 
+def _configure_toggle(environment_name: str, enabled: bool | None) -> None:
+    """Apply a tri-state runtime toggle without overwriting omitted settings."""
+    if enabled is None:
+        return
+    if enabled:
+        os.environ[environment_name] = "1"
+    else:
+        os.environ.pop(environment_name, None)
+
+
 def configure_weight_streaming_budget(budget_bytes: int | None) -> None:
     """在导入 C++ runtime 前设置可选的 TensorRT 权重驻留预算。"""
     if budget_bytes is None:
@@ -389,82 +397,42 @@ def configure_cuda_graph(mode: str | None) -> None:
 
 def configure_profile_contexts(enabled: bool | None) -> None:
     """设置 profile-pinned execution context 实验开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_PIN_OPTIMIZATION_PROFILES"] = "1"
-    else:
-        os.environ.pop("EDGELLM_PIN_OPTIMIZATION_PROFILES", None)
+    _configure_toggle("EDGELLM_PIN_OPTIMIZATION_PROFILES", enabled)
 
 
 def configure_profile_switch_timing(enabled: bool | None) -> None:
     """设置 profile API 主机调用打点实验开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_PROFILE_SWITCH_TIMING"] = "1"
-    else:
-        os.environ.pop("EDGELLM_PROFILE_SWITCH_TIMING", None)
+    _configure_toggle("EDGELLM_PROFILE_SWITCH_TIMING", enabled)
 
 
 def configure_binding_state_cache(enabled: bool | None) -> None:
     """设置 prepare() 后复用 binding snapshot 的实验开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_CACHE_BINDING_STATE"] = "1"
-    else:
-        os.environ.pop("EDGELLM_CACHE_BINDING_STATE", None)
+    _configure_toggle("EDGELLM_CACHE_BINDING_STATE", enabled)
 
 
 def configure_registered_binding_cache(enabled: bool | None) -> None:
     """设置已注册 tensor 的 address/shape 绑定缓存实验开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_CACHE_REGISTERED_BINDINGS"] = "1"
-    else:
-        os.environ.pop("EDGELLM_CACHE_REGISTERED_BINDINGS", None)
+    _configure_toggle("EDGELLM_CACHE_REGISTERED_BINDINGS", enabled)
 
 
 def configure_redundant_profile_switch(enabled: bool | None) -> None:
     """设置同 profile 重复 setOptimizationProfileAsync 跳过开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_SKIP_REDUNDANT_PROFILE_SWITCH"] = "1"
-    else:
-        os.environ.pop("EDGELLM_SKIP_REDUNDANT_PROFILE_SWITCH", None)
+    _configure_toggle("EDGELLM_SKIP_REDUNDANT_PROFILE_SWITCH", enabled)
 
 
 def configure_fallback_binding_scan(enabled: bool | None) -> None:
     """设置已确认全量 registry binding 时跳过 fallback scan 的实验开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_SKIP_FALLBACK_BINDING_SCAN"] = "1"
-    else:
-        os.environ.pop("EDGELLM_SKIP_FALLBACK_BINDING_SCAN", None)
+    _configure_toggle("EDGELLM_SKIP_FALLBACK_BINDING_SCAN", enabled)
 
 
 def configure_xqa_selection_logging(enabled: bool | None) -> None:
     """设置 0028 XQA 实际 kernel 选择日志开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_LOG_XQA_SELECTION"] = "1"
-    else:
-        os.environ.pop("EDGELLM_LOG_XQA_SELECTION", None)
+    _configure_toggle("EDGELLM_LOG_XQA_SELECTION", enabled)
 
 
 def configure_fmha_force_granular_tiling(enabled: bool | None) -> None:
     """设置 0043 head_dim=128 tiled FMHA 候选开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_FMHA_FORCE_GRANULAR_TILING"] = "1"
-    else:
-        os.environ.pop("EDGELLM_FMHA_FORCE_GRANULAR_TILING", None)
+    _configure_toggle("EDGELLM_FMHA_FORCE_GRANULAR_TILING", enabled)
 
 
 def configure_greedy_argmax_block_size(block_size: int | None) -> None:
@@ -490,12 +458,7 @@ def configure_greedy_argmax_impl(implementation: str | None) -> None:
 
 def configure_direct_device_token_embedding(enabled: bool | None) -> None:
     """设置 0030/0031 device-side token embedding 候选开关。"""
-    if enabled is None:
-        return
-    if enabled:
-        os.environ["EDGELLM_DIRECT_DEVICE_TOKEN_EMBED"] = "1"
-    else:
-        os.environ.pop("EDGELLM_DIRECT_DEVICE_TOKEN_EMBED", None)
+    _configure_toggle("EDGELLM_DIRECT_DEVICE_TOKEN_EMBED", enabled)
 
 
 def configure_int4_gemm_stages(stages: int | None) -> None:
@@ -574,6 +537,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--http-max-batch-size",
+        type=int,
+        default=1,
+        help="HTTP 微批调度的最大原生 batch；必须不大于已构建 engine 的 maxBatch",
+    )
     parser.add_argument(
         "--weight-streaming-budget-bytes",
         type=int,
@@ -716,6 +685,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.http_max_batch_size <= 0:
+        parser.error("--http-max-batch-size must be positive")
+
     try:
         runtime_variant_id = apply_runtime_variant(args)
     except (FileNotFoundError, ValueError) as error:
@@ -810,6 +782,7 @@ def main(argv: list[str] | None = None) -> int:
         visual_engine_root=visual_engine_root,
         host=args.host,
         port=args.port,
+        http_max_batch_size=args.http_max_batch_size,
         cuda_graph=args.cuda_graph,
         pin_optimization_profiles=args.pin_optimization_profiles,
         profile_switch_timing=args.profile_switch_timing,

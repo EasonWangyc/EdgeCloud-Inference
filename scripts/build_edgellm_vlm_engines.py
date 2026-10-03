@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 import subprocess
@@ -12,6 +11,8 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from parksight_vlm.tensorrt import sha256_file
 
 
 def build_commands(
@@ -519,7 +520,7 @@ def _inspect_outputs(paths: list[Path]) -> list[dict[str, Any]]:
             "path": str(path),
             "exists": path.is_file(),
             "size_bytes": path.stat().st_size if path.is_file() else None,
-            "sha256": _sha256(path) if path.is_file() else None,
+            "sha256": sha256_file(path) if path.is_file() else None,
         }
         for path in paths
     ]
@@ -533,7 +534,7 @@ def _inspect_optional_path(path: Path | None) -> dict[str, Any] | None:
         "path": str(path),
         "exists": path.is_file(),
         "size_bytes": path.stat().st_size if path.is_file() else None,
-        "sha256": _sha256(path) if path.is_file() else None,
+        "sha256": sha256_file(path) if path.is_file() else None,
     }
 
 
@@ -583,7 +584,7 @@ def _validate_timing_cache_binding(
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
         "schema_version": payload["schema_version"],
         "device": dict(device),
         "builder_config": dict(builder_config),
@@ -647,8 +648,8 @@ def _validate_reduced_vocab_for_build(
             f"{validation['reasons']}"
         )
 
-    source_map_sha256 = _sha256(map_path)
-    source_metadata_sha256 = _sha256(metadata_path)
+    source_map_sha256 = sha256_file(map_path)
+    source_metadata_sha256 = sha256_file(metadata_path)
     reduced_vocab_size = validation["metadata"]["reduced_vocab_size"]
     selection_report = json.loads(selection_report_path.read_text(encoding="utf-8"))
     if not isinstance(selection_report, dict):
@@ -666,8 +667,8 @@ def _validate_reduced_vocab_for_build(
             "reduced-vocabulary selection report count does not match map metadata: "
             f"report={report_map.get('count')}, metadata={reduced_vocab_size}"
         )
-    onnx_map_sha256 = _sha256(onnx_map_path)
-    onnx_metadata_sha256 = _sha256(onnx_metadata_path)
+    onnx_map_sha256 = sha256_file(onnx_map_path)
+    onnx_metadata_sha256 = sha256_file(onnx_metadata_path)
     if source_map_sha256 != onnx_map_sha256:
         raise ValueError(
             "ONNX reduced-vocabulary map does not match source map SHA-256: "
@@ -709,7 +710,7 @@ def _validate_reduced_vocab_for_build(
         "selection_report": {
             "path": str(selection_report_path),
             "size_bytes": selection_report_path.stat().st_size,
-            "sha256": _sha256(selection_report_path),
+            "sha256": sha256_file(selection_report_path),
             "map_sha256_verified": True,
         },
         "onnx_config": {
@@ -770,7 +771,7 @@ def _validate_quantization_provenance(
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
         "status": payload["status"],
         "edge_llm_revision": payload["edge_llm_revision"],
         "quantization": payload["quantization"],
@@ -813,7 +814,7 @@ def _validate_reduced_vocab_coverage_report(
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
         "valid": True,
         "reference_sample_count": payload.get("reference_sample_count"),
         "total_reference_tokens": payload.get("total_reference_tokens"),
@@ -821,14 +822,6 @@ def _validate_reduced_vocab_coverage_report(
         "sample_coverage_fraction": sample_coverage,
         "map_sha256_verified": True,
     }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 if __name__ == "__main__":

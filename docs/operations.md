@@ -49,6 +49,66 @@ PYTHONPATH=src python3 -m parksight_vlm.app.analyze_image \
 HTTP server 的启动方式、请求兼容性和目标模型支持情况必须以 Jetson 上实际安装的
 TensorRT Edge-LLM revision 为准。
 
+云侧 vLLM 使用独立 `vllm_http` Adapter，通过 OpenAI-compatible Chat Completions
+API 发送图片 data URI 和冻结 workload prompt。PS20 研究配置模板为
+`configs/studies/server_vllm_http_ps20_pilot.example.json`。复制为实际 study 配置后，
+将 `backend_revision` 改为云服务安装的 vLLM 版本，将 `base_url`、`model_name` 和
+`precision` 改为实际服务值，并确认服务加载了配置声明的模型 revision；客户端记录的
+`model_revision` 不会自动验证远端权重。
+
+在 Windows PowerShell 中设置密钥环境变量并运行研究：
+
+```powershell
+$env:VLLM_API_KEY = "<服务端 API key>"
+$env:PYTHONPATH = "src"
+& ".\.venv\Scripts\python.exe" -m parksight_vlm.app.run_study `
+  --config configs\studies\server_vllm_http_ps20_pilot.json
+```
+
+若服务不要求鉴权，可从配置删除 `api_key_env`。密钥只从环境读取，不应写进 study
+JSON 或报告。当前 HTTP TTFT 是客户端观察到的首个非空输出时延，包含网络与服务排队；
+跨云端与 Jetson 的时延不用于框架性能归因。
+
+## 端云协同研究
+
+`configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json` 提供一个 Edge-LLM
+优先、vLLM 作为场景升级与故障备用的组合 Runtime。配置中的 laptop 地址、vLLM 版本和服务模型名
+是模板值；运行前需改为实际值。端侧服务由 Jetson 本机 HTTP endpoint 提供，云侧服务
+可以运行在同一局域网可访问的 laptop GPU 上。笔记本合盖休眠、网络切换或服务退出时，
+健康探测会将云路径判为不可用。
+
+vLLM 服务端需运行在其支持的 Linux GPU 环境；Windows 主机应通过 WSL2/Linux 部署，
+而不是假设原生 Windows 环境受支持。Laptop 能否承载 Qwen3-VL-2B 还取决于具体 GPU、
+可用显存、驱动/CUDA 组合和所选精度；模型权重、视觉编码器、KV cache 与服务开销都占用
+显存，启动成功和长时间持续运行需分别验证。
+
+模板默认 `cloud_allowed=false`。只有确认本次场景图片允许离开 Jetson 时，才将其设为
+`true`；同时将 `network_available` 设为当前网络许可开关。路由器会请求 Edge 和 vLLM
+服务的 `/health`，并记录策略、信号快照、主路径、回退原因、各路径执行结果和 `routing_ms`。
+`/health` 只表示服务可达，不保证模型请求可成功；真实请求失败仍按配置的类别决定是否
+回退。模型拒答和输入错误不在默认自动回退列表中，避免把业务拒答伪装成可恢复故障。
+端侧输出命中策略配置的 high 风险等级或关键事件时，可升级到云端复核；升级遵循相同的
+`cloud_allowed` 授权门控。若云端复核失败，保留已成功的端侧结果，并记录升级尝试和失败。
+
+当前 health provider 实时刷新 Edge/vLLM 的 HTTP 可达状态；显存余量、温度、RTT 和丢包
+率由 `RoutingSignalsProvider` 接口输入。若配置中未提供这些数值，对应资源/SLA 门槛不会
+被应用。因此现阶段可以直接验证授权门控、健康路由和故障回退，资源感知路由需接入真实
+设备与网络遥测后再启用并评估。场景升级条件来自端侧已校验的初判，不使用参考标注。
+
+运行组合研究时，执行端必须能够访问配置中声明的服务地址。建议服务只绑定到可信局域网
+或 VPN 接口，不直接暴露到公网；远程传输图像和 API key 的连接应使用 TLS。Router 入口
+通过 `parksight-study --config` 执行，不作为单图 CLI 后端暴露。
+
+## 两个推理框架的项目化学习
+
+学习任务围绕同一 `ParkingCase`、冻结 workload 和 `InferenceRecord` 展开，先手写最小
+请求构造与响应解析，再对照 `VllmHttpBackend`、`EdgeLlmHttpBackend` 和 `RiskRuntime`
+补齐流式响应、超时、错误分类、计时和 schema 校验。之后沿两条实际链路分别追踪：vLLM
+的 OpenAI-compatible 服务入口、调度/批处理、模型执行与响应；TensorRT Edge-LLM 的
+HTTP 服务、engine 构建身份、视觉/LLM 执行与 KV cache。每个阶段保存可运行的小实现、
+执行配置和观察到的事实；同一输入用于理解接口差异，不以不同硬件上的耗时差异推断框架
+优劣。
+
 板端启动服务时，建议显式传入 Edge-LLM checkout。入口会自动加入源码和 pybind 路径，
 并从 checkout 的 `build/libNvInfer_edgellm_plugin.so` 发现插件；也可以用
 `--plugin-path` 显式指定插件：
