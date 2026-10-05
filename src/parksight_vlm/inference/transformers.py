@@ -9,6 +9,8 @@ from typing import Any, Protocol
 
 from parksight_vlm.workload import FrozenWorkload
 
+from .images import load_workload_image
+
 from .runtime import (
     ResourceSnapshot,
     RiskRuntime,
@@ -58,16 +60,7 @@ class HuggingFaceQwen3VlBackend:
         assert self._torch is not None
 
         preprocess_start = time.perf_counter()
-        try:
-            from PIL import Image
-        except ImportError as error:
-            raise RuntimeDependencyError(
-                "Pillow is required by HuggingFaceQwen3VlBackend"
-            ) from error
-        with Image.open(image_path) as source_image:
-            image = source_image.convert("RGB").resize(
-                (workload.input_size.width, workload.input_size.height) # 预处理图片，转换成RGB并缩放至指定长×宽
-            )
+        image = load_workload_image(image_path, workload)
         messages = build_qwen3_vl_chat_messages(image=image, workload=workload)
         inputs = self._processor.apply_chat_template(
             messages,

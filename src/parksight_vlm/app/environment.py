@@ -18,7 +18,7 @@ def capture_environment() -> dict[str, Any]:
         "machine": platform.machine(),
         "python_version": sys.version.split()[0],
         "python_packages": _package_versions(
-            ("parksight-vlm", "torch", "transformers", "Pillow")
+            ("parksight-vlm", "torch", "transformers", "vllm", "Pillow")
         ),
     }
     l4t_release_path = Path("/etc/nv_tegra_release")

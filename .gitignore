@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 .venv/
+.venv-vllm/
+*.egg-info/
 .migration/
 .casebook-test-tmp/
 

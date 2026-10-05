@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import codecs
 import http.client
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any, Iterator, Protocol
@@ -12,7 +14,14 @@ from urllib.request import Request, urlopen
 
 from parksight_vlm.workload import FrozenWorkload
 
-from .runtime import RiskRuntime, RuntimeGeneration, RuntimeIdentity, StageTimings
+from .runtime import (
+    RiskRuntime,
+    RuntimeGeneration,
+    RuntimeIdentity,
+    RuntimeRefusalError,
+    StageTimings,
+    StreamTimings,
+)
 
 
 class EdgeLlmBackend(Protocol):
@@ -38,6 +47,13 @@ class OpenAICompatibleHttpBackend:
         parsed_url = urlsplit(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("base_url must be an absolute http(s) URL")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be a finite positive number")
         base_path = parsed_url.path.rstrip("/")
         if base_path.endswith("/v1/chat/completions"):
             endpoint_path = base_path
@@ -75,6 +91,16 @@ class OpenAICompatibleHttpBackend:
             pass
 
     def generate(self, *, image_path: Path, workload: FrozenWorkload) -> RuntimeGeneration:
+        """执行请求；任何传输或解析失败都丢弃持久连接，不隐式重试 POST。"""
+        try:
+            return self._generate_response(image_path=image_path, workload=workload)
+        except Exception:
+            self.close()
+            raise
+
+    def _generate_response(
+        self, *, image_path: Path, workload: FrozenWorkload
+    ) -> RuntimeGeneration:
         request_build_start = time.perf_counter()
         payload = self.build_request_payload(
             image_path=image_path,
@@ -110,14 +136,19 @@ class OpenAICompatibleHttpBackend:
                 )
             response_will_close = bool(getattr(response, "will_close", False))
             if self._stream_responses and self.is_event_stream_response(response):
-                response_payload, measured_ttft_ms, stream_timings = (
+                response_payload, measured_ttft_ms, stream_timings, arrivals = (
                     self.read_stream_response(response, request_start=http_start)
                 )
             else:
                 response_body = response.read()
-                response_payload = json.loads(response_body.decode("utf-8"))
+                try:
+                    response_payload = json.loads(response_body.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError) as error:
+                    raise RuntimeError("invalid OpenAI-compatible JSON envelope") from error
                 measured_ttft_ms = None
                 stream_timings = {}
+                arrivals = StreamTimings()
+        self.validate_response_payload(response_payload)
         if self._reuse_http_connection and response_will_close:
             self.close()
         http_round_trip_ms = (time.perf_counter() - http_start) * 1000.0
@@ -129,14 +160,29 @@ class OpenAICompatibleHttpBackend:
             raise RuntimeError("OpenAI-compatible assistant content must be a string")
         usage = response_payload.get("usage", {})
         output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-        if not isinstance(output_tokens, int):
-            output_tokens = None
+        if output_tokens is not None and (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 0
+        ):
+            raise RuntimeError("completion_tokens must be a non-negative integer")
+        input_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        if input_tokens is not None and (
+            isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0
+        ):
+            raise RuntimeError("prompt_tokens must be a non-negative integer")
+        client_tpot_ms = None
+        if output_tokens is not None and output_tokens > 1 and len(arrivals.content_arrival_ms) > 1:
+            client_tpot_ms = (
+                arrivals.content_arrival_ms[-1] - arrivals.content_arrival_ms[0]
+            ) / (output_tokens - 1)
         server_timings = dict(stream_timings)
         server_timings.update(self.parse_server_timings(response_payload))
         return RuntimeGeneration(
             raw_output=raw_output,
             stage_timings=StageTimings(
-                # 这里是客户端构造请求的耗时，不包含图片解码或服务端处理。
+                # 客户端构造请求耗时；启用 workload_resize 时包含解码与缩放，
+                # 不包含服务端处理。
                 preprocess_ms=request_build_ms,
                 vision_encode_ms=server_timings.get("vision_encode_ms"),
                 model_generate_ms=server_timings.get("model_generate_ms"),
@@ -153,8 +199,12 @@ class OpenAICompatibleHttpBackend:
                     if measured_ttft_ms is not None
                     else server_timings.get("time_to_first_token_ms")
                 ),
+                client_total_ttft_ms=(request_build_ms + measured_ttft_ms if measured_ttft_ms is not None else None),
+                client_tpot_ms=client_tpot_ms,
             ),
             output_tokens=output_tokens,
+            input_tokens=input_tokens,
+            stream_timings=arrivals,
         )
 
     def _open_persistent_response(
@@ -212,23 +262,29 @@ class OpenAICompatibleHttpBackend:
         response: Any,
         *,
         request_start: float,
-    ) -> tuple[dict[str, object], float | None, dict[str, float]]:
+    ) -> tuple[dict[str, object], float | None, dict[str, float], StreamTimings]:
         """读取 SSE 响应并在首个非空文本 delta 到达时记录 TTFT。"""
         content_parts: list[str] = []
         usage: dict[str, object] | None = None
         timings: dict[str, float] = {}
         first_token_ms: float | None = None
         last_payload: dict[str, object] = {}
+        arrivals: list[float] = []
 
         for payload in cls.iter_sse_payloads(response):
+            cls.validate_response_payload(payload)
             last_payload = payload
             timings.update(cls.parse_server_timings(payload))
             raw_usage = payload.get("usage")
             if isinstance(raw_usage, dict):
                 usage = raw_usage
-            for content in cls.extract_stream_content(payload):
-                if content and first_token_ms is None:
-                    first_token_ms = (time.perf_counter() - request_start) * 1000.0
+            contents = list(cls.extract_stream_content(payload))
+            if any(contents):
+                arrival = (time.perf_counter() - request_start) * 1000.0
+                arrivals.append(arrival)
+                if first_token_ms is None:
+                    first_token_ms = arrival
+            for content in contents:
                 content_parts.append(content)
 
         result: dict[str, object] = {
@@ -241,19 +297,41 @@ class OpenAICompatibleHttpBackend:
         for key, value in last_payload.items():
             if key not in {"choices", "usage"}:
                 result[key] = value
-        return result, first_token_ms, timings
+        return result, first_token_ms, timings, StreamTimings(tuple(arrivals))
+
+    @classmethod
+    def iter_sse_payloads(cls, response: Any) -> Iterator[dict[str, object]]:
+        """增量解码 SSE；只有收到 [DONE] 才将流视为完整返回。"""
+        completed = False
+        for data in cls._iter_sse_data(response):
+            if data == "[DONE]":
+                completed = True
+                continue
+            if completed:
+                raise RuntimeError("SSE response contains data after [DONE]")
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError as error:
+                raise RuntimeError("invalid SSE JSON envelope") from error
+            if not isinstance(parsed, dict):
+                raise RuntimeError("SSE response payload must be an object")
+            yield parsed
+        if not completed:
+            raise RuntimeError("SSE response ended before [DONE]")
 
     @staticmethod
-    def iter_sse_payloads(response: Any) -> Iterator[dict[str, object]]:
-        """将 SSE data 事件解码为 JSON 对象，忽略注释和 [DONE]。"""
+    def _iter_sse_data(response: Any) -> Iterator[str]:
+        """保留跨 chunk 的 UTF-8 状态、行边界和多行 data 事件。"""
+        decoder = codecs.getincrementaldecoder("utf-8-sig")()
         data_lines: list[str] = []
         line_buffer = ""
         for raw_chunk in response:
-            if isinstance(raw_chunk, bytes):
-                chunk = raw_chunk.decode("utf-8")
-            else:
-                chunk = str(raw_chunk)
-            line_buffer += chunk
+            chunk_bytes = (
+                raw_chunk
+                if isinstance(raw_chunk, bytes)
+                else str(raw_chunk).encode("utf-8")
+            )
+            line_buffer += decoder.decode(chunk_bytes)
             # HTTPResponse 通常逐行迭代，但代理也可能将一行拆成多个 chunk。
             lines = line_buffer.split("\n")
             line_buffer = lines.pop()
@@ -263,24 +341,40 @@ class OpenAICompatibleHttpBackend:
                     if data_lines:
                         payload = "\n".join(data_lines)
                         data_lines = []
-                        if payload != "[DONE]":
-                            parsed = json.loads(payload)
-                            if isinstance(parsed, dict):
-                                yield parsed
+                        yield payload
                     continue
                 if line.startswith(":"):
                     continue
                 if line.startswith("data:"):
-                    data_lines.append(line[5:].lstrip())
+                    data_lines.append(line[5:].removeprefix(" "))
+        line_buffer += decoder.decode(b"", final=True)
         if line_buffer:
             if line_buffer.startswith("data:"):
-                data_lines.append(line_buffer[5:].lstrip())
+                data_lines.append(line_buffer[5:].removeprefix(" ").rstrip("\r"))
         if data_lines:
-            payload = "\n".join(data_lines)
-            if payload != "[DONE]":
-                parsed = json.loads(payload)
-                if isinstance(parsed, dict):
-                    yield parsed
+            yield "\n".join(data_lines)
+
+    @staticmethod
+    def validate_response_payload(payload: object) -> None:
+        """保留服务端错误和明确拒答的语义，不将其归入业务 JSON 错误。"""
+        if not isinstance(payload, dict):
+            raise RuntimeError("OpenAI-compatible response must be an object")
+        if payload.get("error") is not None:
+            error = payload["error"]
+            message = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(f"OpenAI-compatible server error: {message}")
+        choices = payload.get("choices", [])
+        if not isinstance(choices, list):
+            raise RuntimeError("OpenAI-compatible choices must be an array")
+        for choice in choices:
+            if not isinstance(choice, dict):
+                raise RuntimeError("OpenAI-compatible choice must be an object")
+            if choice.get("finish_reason") == "content_filter":
+                raise RuntimeRefusalError("model response was filtered")
+            for name in ("message", "delta"):
+                part = choice.get(name)
+                if isinstance(part, dict) and part.get("refusal"):
+                    raise RuntimeRefusalError(str(part["refusal"]))
 
     @staticmethod
     def extract_stream_content(payload: dict[str, object]) -> Iterator[str]:
@@ -331,8 +425,13 @@ class OpenAICompatibleHttpBackend:
             normalized_name = aliases.get(name, name)
             if normalized_name not in supported:
                 continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-                raise RuntimeError(f"server timing must be non-negative: {name}")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise RuntimeError(f"server timing must be finite and non-negative: {name}")
             parsed[normalized_name] = float(value)
         return parsed
 

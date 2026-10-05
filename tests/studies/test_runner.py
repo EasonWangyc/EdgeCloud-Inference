@@ -128,6 +128,11 @@ class StudyRunnerTests(unittest.TestCase):
         self.assertEqual(report.failure_summary, {"json_parse_error": 1})
         self.assertEqual(report.performance_metrics.successful_sample_count, 1)
         self.assertEqual(report.performance_metrics.backend_completed_sample_count, 2)
+        self.assertIsNone(report.performance_metrics.cold_start_ms)
+        self.assertEqual(
+            report.performance_metrics.first_request_ms,
+            report.records[0].stage_timings.end_to_end_ms,
+        )
         self.assertEqual(report.performance_metrics.tokens_per_second, 500.0)
         self.assertAlmostEqual(
             report.performance_metrics.aggregate_output_tokens_per_end_to_end_second,

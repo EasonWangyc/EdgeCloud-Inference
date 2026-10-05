@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,10 @@ class RuntimeFailureCategory(str, Enum):
 
 class RuntimeDependencyError(RuntimeError):
     """当缺少必要的 Runtime 依赖时由 Adapter 抛出。"""
+
+
+class RuntimeInputError(RuntimeError):
+    """图片内容无效，不能作为运行时输入。"""
 
 
 class RuntimeUnsupportedError(RuntimeError):
@@ -89,11 +94,12 @@ class StageTimings:
     end_to_end_ms: float | None = None
     time_to_first_token_ms: float | None = None
     routing_ms: float | None = None
+    client_total_ttft_ms: float | None = None
+    client_tpot_ms: float | None = None
 
     def __post_init__(self) -> None:
         for field_name, value in self.to_mapping().items():
-            if value is not None and value < 0:
-                raise ValueError(f"{field_name} must not be negative")
+            _validate_measurement(value, field_name)
 
     def to_mapping(self) -> dict[str, float | None]:
         return {
@@ -107,6 +113,34 @@ class StageTimings:
             "end_to_end_ms": self.end_to_end_ms,
             "time_to_first_token_ms": self.time_to_first_token_ms,
             "routing_ms": self.routing_ms,
+            "client_total_ttft_ms": self.client_total_ttft_ms,
+            "client_tpot_ms": self.client_tpot_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StreamTimings:
+    """非空 SSE 文本事件到达时间，距 HTTP 请求开始的毫秒数；不是 token 边界。"""
+
+    content_arrival_ms: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        for value in self.content_arrival_ms:
+            if value is None:
+                raise ValueError("stream arrival time must be numeric")
+            _validate_measurement(value, "content_arrival_ms")
+        if any(b < a for a, b in zip(self.content_arrival_ms, self.content_arrival_ms[1:])):
+            raise ValueError("stream arrival times must be monotonic")
+
+    @property
+    def chunk_intervals_ms(self) -> tuple[float, ...]:
+        return tuple(b - a for a, b in zip(self.content_arrival_ms, self.content_arrival_ms[1:]))
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "content_chunk_count": len(self.content_arrival_ms),
+            "content_arrival_ms": list(self.content_arrival_ms),
+            "chunk_intervals_ms": list(self.chunk_intervals_ms),
         }
 
 
@@ -120,8 +154,7 @@ class ResourceSnapshot:
 
     def __post_init__(self) -> None:
         for field_name, value in self.to_mapping().items():
-            if value is not None and value < 0:
-                raise ValueError(f"{field_name} must not be negative")
+            _validate_measurement(value, field_name)
 
     def to_mapping(self) -> dict[str, float | None]:
         return {
@@ -155,12 +188,24 @@ class RuntimeGeneration:
     stage_timings: StageTimings = field(default_factory=StageTimings)
     resource_snapshot: ResourceSnapshot = field(default_factory=ResourceSnapshot)
     output_tokens: int | None = None
+    input_tokens: int | None = None
+    stream_timings: StreamTimings = field(default_factory=StreamTimings)
 
     def __post_init__(self) -> None:
         if not isinstance(self.raw_output, str):
             raise TypeError("raw_output must be a string")
-        if self.output_tokens is not None and self.output_tokens < 0:
-            raise ValueError("output_tokens must not be negative")
+        if self.output_tokens is not None and (
+            isinstance(self.output_tokens, bool)
+            or not isinstance(self.output_tokens, int)
+            or self.output_tokens < 0
+        ):
+            raise ValueError("output_tokens must be a non-negative integer")
+        if self.input_tokens is not None and (
+            isinstance(self.input_tokens, bool)
+            or not isinstance(self.input_tokens, int)
+            or self.input_tokens < 0
+        ):
+            raise ValueError("input_tokens must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +223,8 @@ class InferenceRecord:
     resource_snapshot: ResourceSnapshot
     output_tokens: int | None
     routing_decision: dict[str, Any] | None = None
+    input_tokens: int | None = None
+    stream_timings: StreamTimings = field(default_factory=StreamTimings)
 
     def __post_init__(self) -> None:
         if (self.assessment is None) == (self.failure is None):
@@ -202,6 +249,8 @@ class InferenceRecord:
             "resource_snapshot": self.resource_snapshot.to_mapping(),
             "output_tokens": self.output_tokens,
             "routing_decision": self.routing_decision,
+            "input_tokens": self.input_tokens,
+            "stream_timings": self.stream_timings.to_mapping(),
         }
 
 
@@ -215,6 +264,9 @@ class RiskRuntime(ABC):
     @property
     def identity(self) -> RuntimeIdentity:
         return self._identity
+
+    def close(self) -> None:
+        """释放运行时资源；没有连接资源的 Adapter 无需实现。"""
 
     def analyze(self, case: ParkingCase, workload: FrozenWorkload) -> InferenceRecord:
         """执行一个样本，并保存校验后的输出或失败事实。"""
@@ -254,6 +306,8 @@ class RiskRuntime(ABC):
             stage_timings=timings,
             resource_snapshot=resources,
             output_tokens=output_tokens,
+            input_tokens=generation.input_tokens if generation is not None else None,
+            stream_timings=generation.stream_timings if generation is not None else StreamTimings(),
         )
 
     @abstractmethod
@@ -261,10 +315,20 @@ class RiskRuntime(ABC):
         """调用具体后端，并且只返回实际测得的事实。"""
 
 
+def _validate_measurement(value: float | None, field_name: str) -> None:
+    if value is not None and (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{field_name} must be finite and non-negative")
+
+
 def _classify_failure(error: Exception) -> RuntimeFailure:
     message = str(error) or error.__class__.__name__
     lowered_message = message.lower()
-    if isinstance(error, CasebookValidationError):
+    if isinstance(error, (CasebookValidationError, RuntimeInputError)):
         category = RuntimeFailureCategory.INPUT_ERROR
     elif isinstance(error, RuntimeDependencyError):
         category = RuntimeFailureCategory.DEPENDENCY_UNAVAILABLE

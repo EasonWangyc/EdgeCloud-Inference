@@ -15,9 +15,11 @@ from .runtime import (
     RuntimeFailureCategory,
     RuntimeGeneration,
     RuntimeIdentity,
+    RuntimeInputError,
     RuntimeRefusalError,
     RuntimeUnsupportedError,
     StageTimings,
+    StreamTimings,
 )
 from .transformers import (
     HuggingFaceQwen3VlBackend,
@@ -47,9 +49,11 @@ __all__ = [
     "RuntimeFailureCategory",
     "RuntimeGeneration",
     "RuntimeIdentity",
+    "RuntimeInputError",
     "RuntimeRefusalError",
     "RuntimeUnsupportedError",
     "StageTimings",
+    "StreamTimings",
     "HuggingFaceQwen3VlBackend",
     "TransformersBackend",
     "TransformersRuntime",

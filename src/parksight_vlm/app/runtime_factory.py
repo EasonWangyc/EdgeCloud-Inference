@@ -91,11 +91,10 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
             },
             "tensorrt_edge_llm_http",
         )
-        timeout_seconds = config.options.get("timeout_seconds", 120.0)
-        if isinstance(timeout_seconds, bool) or not isinstance(
-            timeout_seconds, (int, float)
-        ):
-            raise AppConfigError("runtime.options.timeout_seconds must be numeric")
+        timeout_seconds = _positive_number(
+            config.options.get("timeout_seconds", 120.0),
+            "runtime.options.timeout_seconds",
+        )
         stream_responses = config.options.get("stream_responses", True)
         if not isinstance(stream_responses, bool):
             raise AppConfigError("runtime.options.stream_responses must be a boolean")
@@ -131,6 +130,7 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
                 "reuse_http_connection",
                 "api_key_env",
                 "json_mode",
+                "image_preprocessing",
             },
             "vllm_http",
         )
@@ -145,6 +145,9 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
             config.options, "reuse_http_connection", True
         )
         json_mode = _option_bool(config.options, "json_mode", True)
+        image_preprocessing = _option_text(config.options, "image_preprocessing", "source")
+        if image_preprocessing not in ("source", "workload_resize"):
+            raise AppConfigError("runtime.options.image_preprocessing must be source or workload_resize")
         api_key_env = config.options.get("api_key_env")
         api_key = None
         if api_key_env is not None:
@@ -166,6 +169,7 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
             reuse_http_connection=reuse_http_connection,
             api_key=api_key,
             json_mode=json_mode,
+            image_preprocessing=image_preprocessing,
         )
         return VllmRuntime(
             data_root=data_root,
