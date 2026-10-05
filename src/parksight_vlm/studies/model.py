@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -137,12 +137,24 @@ class PerformanceMetrics:
     peak_memory_mb: float | None
     average_power_w: float | None
     peak_temperature_c: float | None
+    first_request_ms: float | None = None
+    stream_chunk_interval_ms: PercentileSummary | None = None
+    token_counts: Mapping[str, int] = field(default_factory=dict)
+    measurement_wall_seconds: float | None = None
+    completed_requests_per_second: float | None = None
+    wall_output_tokens_per_second: float | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         return {
             "successful_sample_count": self.successful_sample_count,
             "backend_completed_sample_count": self.backend_completed_sample_count,
             "cold_start_ms": self.cold_start_ms,
+            "first_request_ms": self.first_request_ms,
+            "stream_chunk_interval_ms": self.stream_chunk_interval_ms.to_mapping() if self.stream_chunk_interval_ms is not None else None,
+            "token_counts": dict(self.token_counts),
+            "measurement_wall_seconds": self.measurement_wall_seconds,
+            "completed_requests_per_second": self.completed_requests_per_second,
+            "wall_output_tokens_per_second": self.wall_output_tokens_per_second,
             "stage_latency_ms": {
                 stage: summary.to_mapping() for stage, summary in self.stage_latency_ms.items()
             },

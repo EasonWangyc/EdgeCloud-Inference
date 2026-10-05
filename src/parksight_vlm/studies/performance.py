@@ -10,8 +10,15 @@ from parksight_vlm.inference import InferenceRecord
 from .model import PerformanceMetrics, PercentileSummary
 
 
-def compute_performance_metrics(records: Sequence[InferenceRecord]) -> PerformanceMetrics:
+def compute_performance_metrics(
+    records: Sequence[InferenceRecord], *, measurement_wall_seconds: float | None = None
+) -> PerformanceMetrics:
     """汇总已返回模型输出的记录；质量失败仍保留在 failure_summary 中。"""
+    if measurement_wall_seconds is not None and (
+        isinstance(measurement_wall_seconds, bool)
+        or not math.isfinite(measurement_wall_seconds) or measurement_wall_seconds <= 0
+    ):
+        raise ValueError("measurement_wall_seconds must be finite and positive")
     successful_records = [record for record in records if record.succeeded]
     # JSON 校验失败仍然可能已经完整执行了模型；这些记录应参与运行时性能统计，
     # 但不参与质量指标。raw_output=None 才表示后端没有返回生成结果。
@@ -27,9 +34,9 @@ def compute_performance_metrics(records: Sequence[InferenceRecord]) -> Performan
     stage_latency_ms = {
         stage_name: _summarize(values) for stage_name, values in stage_values.items()
     }
-    cold_start_ms = None
-    if backend_completed_records:
-        cold_start_ms = backend_completed_records[0].stage_timings.end_to_end_ms
+    # A request may target an already-warm HTTP service. Without a separate
+    # runtime initialization measurement, its latency cannot prove cold start.
+    first_request_ms = records[0].stage_timings.end_to_end_ms if records else None
 
     total_tokens = 0
     total_decode_ms = 0.0
@@ -61,7 +68,8 @@ def compute_performance_metrics(records: Sequence[InferenceRecord]) -> Performan
     return PerformanceMetrics(
         successful_sample_count=len(successful_records),
         backend_completed_sample_count=len(backend_completed_records),
-        cold_start_ms=cold_start_ms,
+        cold_start_ms=None,
+        first_request_ms=first_request_ms,
         stage_latency_ms=stage_latency_ms,
         tokens_per_second=tokens_per_second,
         aggregate_output_tokens_per_end_to_end_second=(
@@ -70,6 +78,25 @@ def compute_performance_metrics(records: Sequence[InferenceRecord]) -> Performan
         peak_memory_mb=max(memory_values) if memory_values else None,
         average_power_w=sum(power_values) / len(power_values) if power_values else None,
         peak_temperature_c=max(temperature_values) if temperature_values else None,
+        stream_chunk_interval_ms=(
+            _summarize(chunk_intervals) if (chunk_intervals := [
+                interval for record in backend_completed_records
+                for interval in record.stream_timings.chunk_intervals_ms
+            ]) else None
+        ),
+        token_counts={
+            "input_tokens": sum(record.input_tokens or 0 for record in backend_completed_records),
+            "output_tokens": sum(record.output_tokens or 0 for record in backend_completed_records),
+            "input_usage_record_count": sum(record.input_tokens is not None for record in backend_completed_records),
+            "output_usage_record_count": sum(record.output_tokens is not None for record in backend_completed_records),
+        },
+        measurement_wall_seconds=measurement_wall_seconds,
+        completed_requests_per_second=(len(backend_completed_records) / measurement_wall_seconds if measurement_wall_seconds is not None else None),
+        wall_output_tokens_per_second=(
+            sum(record.output_tokens or 0 for record in backend_completed_records) / measurement_wall_seconds
+            if measurement_wall_seconds is not None and backend_completed_records
+            and all(record.output_tokens is not None for record in backend_completed_records) else None
+        ),
     )
 
 

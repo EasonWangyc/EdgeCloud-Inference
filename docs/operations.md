@@ -56,17 +56,19 @@ API 发送图片 data URI 和冻结 workload prompt。PS20 研究配置模板为
 `precision` 改为实际服务值，并确认服务加载了配置声明的模型 revision；客户端记录的
 `model_revision` 不会自动验证远端权重。
 
-在 Windows PowerShell 中设置密钥环境变量并运行研究：
+WSL 本机部署、独立 Python 环境和 RTX 4060 Laptop 启动参数见
+[`vLLM WSL 部署与验收`](vllm-wsl-deployment.md)。本机服务使用实际配置：
 
-```powershell
-$env:VLLM_API_KEY = "<服务端 API key>"
-$env:PYTHONPATH = "src"
-& ".\.venv\Scripts\python.exe" -m parksight_vlm.app.run_study `
-  --config configs\studies\server_vllm_http_ps20_pilot.json
+```bash
+.venv-vllm/bin/python scripts/benchmark_vllm_http.py \
+  --config configs/studies/wsl_vllm_workload_resize_ps20.json \
+  --gpu-telemetry \
+  --metrics-url http://127.0.0.1:8000/metrics
 ```
 
-若服务不要求鉴权，可从配置删除 `api_key_env`。密钥只从环境读取，不应写进 study
-JSON 或报告。当前 HTTP TTFT 是客户端观察到的首个非空输出时延，包含网络与服务排队；
+若服务要求鉴权，在 Bash 中设置 `VLLM_API_KEY`，并在 runtime options 中设置
+`api_key_env`。密钥只从环境读取，不应写进 study JSON 或报告。
+当前 HTTP TTFT 是客户端观察到的首个非空输出时延，包含网络与服务排队；
 跨云端与 Jetson 的时延不用于框架性能归因。
 
 ## 端云协同研究
@@ -198,6 +200,14 @@ PYTHONPATH=src python3 -m parksight_vlm.app.run_study \
 
 研究入口在运行前校验来源组划分和标注完整性。报告保存配置身份、环境快照、每条
 `InferenceRecord`、质量指标、性能分位数和失败汇总。
+
+通用 StudyReport 的 `first_request_ms` 表示本次研究第一个请求的端到端时延，
+包括该请求失败的情况。`cold_start_ms` 没有独立的运行时初始化证据时保持 null；
+不能将已预热 HTTP 服务的首个研究请求视为冷启动。历史报告不回写，新报告使用此口径。
+
+HTTP Adapter 会在流式读取、响应解析或服务端错误后关闭持久连接，下一请求重新建连，
+不隐式重发 POST。OpenAI-compatible SSE 必须以 `[DONE]` 结束；提前断流和协议错误
+记录为运行时失败，明确的 `refusal` 或 `content_filter` 记录为模型拒答。
 
 三类配置必须使用相同的 workload、模型 revision 和冻结测试集。服务器报告用于正确性
 参考；Jetson Transformers 与 Jetson Edge-LLM 报告用于同机性能比较。

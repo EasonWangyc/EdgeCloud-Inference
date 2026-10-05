@@ -433,7 +433,7 @@ class RuntimeTests(unittest.TestCase):
             ) as mocked_urlopen,
             patch(
                 "parksight_vlm.inference.edge_llm.time.perf_counter",
-                side_effect=[0.0, 0.0, 10.0, 11.0, 20.0],
+                side_effect=[0.0, 0.0, 10.0, 11.0, 12.0, 20.0],
             ),
         ):
             generation = backend.generate(
