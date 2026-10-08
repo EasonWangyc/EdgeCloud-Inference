@@ -95,7 +95,10 @@ def main(argv: list[str] | None = None) -> int: # 当 argv=None 时，argparse �
         ),
         data_root=image_path.parent,
     )
-    record = analyze_image(image_path=image_path, runtime=runtime, workload=workload)
+    try:
+        record = analyze_image(image_path=image_path, runtime=runtime, workload=workload)
+    finally:
+        runtime.close()
     print(json.dumps(record.to_mapping(), ensure_ascii=False, indent=2))
     return 0 if record.succeeded else 2
 

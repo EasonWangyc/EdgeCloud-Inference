@@ -16,6 +16,7 @@ from urllib.request import urlopen
 from parksight_vlm.app.config import AppStudyConfig
 from parksight_vlm.app.run_study import run_configured_study
 from parksight_vlm.studies.server_metrics import summarize_window
+from parksight_vlm.studies.server_config import extract_server_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, help="New report path for a repeated run")
     parser.add_argument("--gpu-telemetry", action="store_true", help="Sample this host's GPU; only use when the vLLM server runs here")
     parser.add_argument("--metrics-url", help="vLLM Prometheus endpoint, e.g. http://127.0.0.1:8000/metrics; requires exclusive server traffic")
+    parser.add_argument("--server-info-url", help="Optional vLLM /server_info?config_format=json endpoint; saves selected effective settings before/after measurement")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of independent closed-loop HTTP workers")
     args = parser.parse_args(argv)
     if args.concurrency < 1:
@@ -40,11 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     metrics_before = output.with_suffix(".metrics.before.prom")
     metrics_after = output.with_suffix(".metrics.after.prom")
     metrics_summary = output.with_suffix(".server_metrics.json")
+    server_config_before = output.with_suffix(".server_config.before.json")
+    server_config_after = output.with_suffix(".server_config.after.json")
     destinations = [output, warmup_output, execution_output]
     if args.gpu_telemetry:
         destinations.append(telemetry_output)
     if args.metrics_url:
         destinations.extend([metrics_before, metrics_after, metrics_summary])
+    if args.server_info_url:
+        destinations.extend([server_config_before, server_config_after])
     for path in destinations:
         if path.exists():
             parser.error(f"evidence already exists: {path}; use --output for another run")
@@ -54,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         "command": [sys.executable, str(Path(__file__).resolve()), *(argv if argv is not None else sys.argv[1:])],
         "config_path": str(args.config.resolve()),
         "config_sha256": hashlib.sha256(args.config.read_bytes()).hexdigest(),
+        "benchmark_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "study_id": config.study.study_id,
         "workload_identity": config.study.workload.identity,
         "runtime_options_sha256": hashlib.sha256(
@@ -72,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "running",
         "client_concurrency": args.concurrency,
         "server_metrics_enabled": bool(args.metrics_url),
+        "server_config_snapshot_enabled": bool(args.server_info_url),
     }
 
     def save_execution() -> None:
@@ -98,10 +106,14 @@ def main(argv: list[str] | None = None) -> int:
         monitor = None
         telemetry = None
         try:
+            if args.server_info_url:
+                with urlopen(args.server_info_url, timeout=10) as response:
+                    effective_before = extract_server_config(json.load(response))
+                server_config_before.write_text(json.dumps(effective_before, indent=2) + "\n", encoding="utf-8")
             if args.gpu_telemetry:
                 telemetry = telemetry_output.open("w", encoding="utf-8")
                 monitor = subprocess.Popen(
-                    ["nvidia-smi", "--query-gpu=timestamp,memory.used,utilization.gpu,power.draw,temperature.gpu", "--format=csv", "--loop-ms=1000"],
+                    ["nvidia-smi", "--query-gpu=timestamp,memory.used,utilization.gpu,power.draw,temperature.gpu,clocks.current.sm,clocks.current.memory,clocks_event_reasons.sw_power_cap,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.hw_power_brake_slowdown", "--format=csv", "--loop-ms=1000"],
                     stdout=telemetry,
                 )
             if args.metrics_url:
@@ -119,17 +131,31 @@ def main(argv: list[str] | None = None) -> int:
                 server["client_backend_completed_requests"] = report.performance_metrics.backend_completed_sample_count
                 server["request_count_matches_client"] = server.get("request_success_count") == report.performance_metrics.backend_completed_sample_count
                 server["output_token_count_matches_client"] = server.get("generated_tokens") == report.performance_metrics.token_counts["output_tokens"]
+                execution["server_metrics_consistent"] = bool(
+                    server.get("valid") and server["request_count_matches_client"]
+                    and server["output_token_count_matches_client"]
+                )
                 metrics_summary.write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
+            if args.server_info_url:
+                with urlopen(args.server_info_url, timeout=10) as response:
+                    effective_after = extract_server_config(json.load(response))
+                server_config_after.write_text(json.dumps(effective_after, indent=2) + "\n", encoding="utf-8")
+                execution["server_config_unchanged"] = effective_before == effective_after
         finally:
             if monitor is not None:
                 monitor.terminate()
                 monitor.wait(timeout=10)
             if telemetry is not None:
                 telemetry.close()
-        execution["status"] = "failed" if report.failure_summary else "succeeded"
+        failed = (
+            bool(report.failure_summary)
+            or execution.get("server_config_unchanged") is False
+            or execution.get("server_metrics_consistent") is False
+        )
+        execution["status"] = "failed" if failed else "succeeded"
         print(output)
         print(json.dumps(report.performance_metrics.to_mapping(), indent=2))
-        return 2 if report.failure_summary else 0
+        return 2 if failed else 0
     except BaseException:
         execution["status"] = "interrupted_or_failed"
         raise

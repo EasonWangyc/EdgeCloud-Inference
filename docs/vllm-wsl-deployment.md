@@ -84,6 +84,9 @@ GPU 遥测仅适用于服务就在本机的情况。已有证据时拒绝覆盖�
 `--output reports/vllm-wsl/新的文件名.json`。
 客户端 TPOT、流式片段间隔、墙钟吞吐及服务端 `/metrics` 的具体口径参见
 [运行时性能测量](runtime-performance.md)。
+该文档还记录双/四序列 eager 批处理候选及 100 请求稳定性复验；
+启动入口为 `bash scripts/serve_vllm_wsl_batch.sh 2` 或 `4`。
+多序列输出存在实际差异，切换配置时应同时保留性能与输出记录。
 
 ## 输入预处理口径
 
@@ -149,6 +152,14 @@ git diff --check
 ```
 
 ## 2026-10-04 本机实测
+
+后续四序列 eager、批次不变模式与四序列 decode Graph 的启动命令、冻结
+配置和实测限制见 [运行时性能研究](runtime-performance.md)。其中
+`serve_vllm_wsl_batch_graph.sh` 为四序列性能候选；原有
+`serve_vllm_wsl_graph.sh` 只捕获 batch=1，两者的测量证据不能混用。
+`serve_vllm_wsl_no_reuse.sh` 提供关闭跨请求 prefix/MM 复用的实验口径；
+benchmark 的 `--server-info-url` 可保存实际缓存、Graph 和模型配置快照。
+该快照端点由实验入口在 localhost 启用，不要求默认服务开启开发端点。
 
 WSL 2 / Ubuntu 22.04.5、Python 3.10.12、RTX 4060 Laptop 8188 MiB，
 Windows 驱动 592.82。CUDA/BF16 矩阵运算通过，固定 revision 的 10 个本地

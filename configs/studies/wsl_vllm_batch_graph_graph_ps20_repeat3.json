@@ -1,0 +1,28 @@
+{
+  "study_id": "wsl_vllm_batch_graph_graph_ps20_repeat3",
+  "workload_path": "../workloads/parking_risk_v1.json",
+  "manifest_path": "../../data/manifests/ps20_pilot_v1.jsonl",
+  "annotations_path": "../../data/annotations/ps20_pilot_v1.jsonl",
+  "data_root": "../../data",
+  "output_path": "../../reports/vllm-wsl/batch-graph-20261008/graph.json",
+  "split": "test",
+  "repetitions": 3,
+  "power_mode": "rtx4060-laptop-wsl-uncontrolled",
+  "runtime": {
+    "backend": "vllm_http",
+    "backend_revision": "0.11.2",
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "none",
+    "precision": "bf16",
+    "options": {
+      "base_url": "http://127.0.0.1:8000",
+      "model_name": "Qwen/Qwen3-VL-2B-Instruct",
+      "timeout_seconds": 180,
+      "stream_responses": true,
+      "reuse_http_connection": true,
+      "json_mode": true,
+      "image_preprocessing": "workload_resize"
+    }
+  }
+}

@@ -384,6 +384,14 @@ class EdgeCloudRouterRuntime(RiskRuntime):
         self._signals_provider = signals_provider
         self._policy = policy
 
+    def close(self) -> None:
+        """释放两个子运行时；一侧失败时仍清理另一侧。"""
+        try:
+            self._edge_runtime.close()
+        finally:
+            if self._cloud_runtime is not self._edge_runtime:
+                self._cloud_runtime.close()
+
     def _generate(
         self, *, image_path: Path, workload: FrozenWorkload
     ) -> RuntimeGeneration:
