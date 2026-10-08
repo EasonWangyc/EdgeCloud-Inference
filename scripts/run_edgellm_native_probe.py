@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+from parksight_vlm.inference.edge_native import construct_with_binding
+
 
 def digest(path: Path) -> str:
     hasher = hashlib.sha256()
@@ -18,16 +20,6 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def construct_with_binding(engine_module, runtime_module, **options):
-    """Reuse the validated module; upstream's path loader otherwise imports it twice."""
-    original = engine_module._import_runtime
-    engine_module._import_runtime = lambda: runtime_module
-    try:
-        return engine_module.LLM(**options)
-    finally:
-        engine_module._import_runtime = original
 
 
 def isolated_engine_view(source: Path, destination: Path) -> list[dict]:

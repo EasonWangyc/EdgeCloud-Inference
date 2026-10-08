@@ -50,7 +50,8 @@ LLM 配置记录 Edge-LLM 0.9.1、FP16 KV cache、batch 上限 1、输入上限
 本地已新增 `jetson_edgellm_fp16_workload_resize_ps20_pilot.json`，显式固定客户端
 448×448 RGB PNG 输入；旧配置仍传原图路径。实际 Pillow 离线核验的 20 张图片
 与 vLLM 上传内容逐像素一致，结果保存于 `image_preprocessing_verification.json`。
-这份新 Adapter 与配置尚未部署到 Jetson，不能用本地测试代替板端结果。
+Adapter 随后已在隔离板端目录完成真实 HTTP 单图验收；这份 FP16 study 配置尚未
+运行完整 PS20，不能用本地图片核验或 INT4 单图替代 FP16 study。
 
 C++ `qwenViTRunner.cpp` 从视觉 builder 配置读取 min/max image tokens，
 从预处理配置读取 patch=16、merge=2；尺寸按 factor=32 对齐。
@@ -61,7 +62,8 @@ C++ `qwenViTRunner.cpp` 从视觉 builder 配置读取 min/max image tokens，
 新增 `serve_edgellm.py --stream-usage` 可从 native delta token IDs 补齐 SSE
 completion usage；安装只发生在服务进程内。当前签名及客户端解析的离线验证见
 `stream_usage_source_snapshot.json` 和 `stream_usage_verification.json`。
-新增入口尚未在板端启用，阶段时间和 prompt/decode 计数仍待补齐。
+新增入口随后已在板端隔离 HTTP 服务启用并完成单图验收；进一步开启串行阶段测量
+后完成阶段时间与 prompt/decode 回传验收，普通 usage 模式仍不补估这些字段。
 
 阶段接口核验确认：现有 binding 只导出 profiling 开关和累计 token/run metrics，
 没有导出 `gTimer` 的 CUDA event 时间。新增
@@ -98,7 +100,8 @@ Timer 是全局可变状态，快照仅限全部 native worker 停止执行时�
 `build.log`、`probe.json`。实际验收发现 upstream `_import_runtime()` 会按文件路径
 重新加载模块；仅调整 `PYTHONPATH` 不足以选择候选绑定，提前导入还会触发重复类型
 注册。`scripts/run_edgellm_native_probe.py` 在构造 runtime 时临时指定已验证模块，
-结束后恢复 loader；该做法限于隔离诊断，尚未接入正式 HTTP 启动入口。
+结束后恢复 loader。该选择机制已复用至正式 HTTP 入口，并要求明确的候选目录和
+SHA-256；默认仍使用 upstream loader。
 
 ## 2026-10-08/09 单图诊断
 
@@ -137,8 +140,88 @@ runtime 初始化 6.020 秒，客户端 PNG 准备 269.05 ms，进程内流式�
 身份、日志及 tegrastats 保存于 `native_int4_diagnostic.json`；板端运行目录为
 `artifacts/runtime/native-timing-20261008/single-image-int4-20261009-retry2/`。
 
-候选已验证 native 单图采集；正式 HTTP 的绑定选择、阶段回传和冻结 PS20 study
-仍待接入验收。FP16 OOM 继续作为独立实验事实保留，不能用 INT4 成功替代它。
+候选已验证 native 单图采集、HTTP 绑定选择及串行阶段回传；冻结 PS20 study
+仍待完成。FP16 OOM 继续作为独立实验事实保留，不能用 INT4 成功替代它。
+
+## 2026-10-09 真实 HTTP 单图
+
+`serve_edgellm.py` 新增 `--native-binding-directory` 与
+`--native-binding-sha256`，两项必须同时提供。启动与 `--check-only` 都验证目录
+仅有一个候选 `.so` 且哈希匹配；静态检查不导入 CUDA。进程已加载其他绑定时拒绝
+覆盖，构造完成恢复 upstream loader，metadata 保存实际候选及选择代码身份。
+
+在新目录 `artifacts/runtime/http-metrics-20261009/` 复制包及 engine 元数据，
+使用上述候选 binding 在 localhost 18080 启动实际服务。真实 HTTP SSE 返回
+95 个 completion token，94 个非空文本事件，严格 JSON 有效。客户端按冻结
+workload 生成临时 448×448 RGB PNG，同机路径协议已实际执行。
+
+HTTP TTFT 为 671.79 ms，含客户端预处理的总 TTFT 为 922.53 ms；请求准备
+250.74 ms、HTTP 往返 12.688 秒、完整客户端诊断 12.941 秒，客户端 TPOT 估计
+126.44 ms。prompt/decode 计数及阶段时间仍为 null；不将 native 诊断的 94 次
+decode 或 CUDA event 时间复制到该请求。单图不用于 p90/p99 或稳定性结论。
+
+原始证据见本地 `reports/jetson-readiness-20261009/http_diagnostic.json`，包括
+完整 SSE、metadata、输入/包身份、客户端源码、日志与 tegrastats。测试结束后
+临时端口连接返回 111（无监听），原 binding 哈希保持不变。
+
+## HTTP 阶段回传与准入验收
+
+`--serial-stage-metrics` 默认关闭，要求显式候选绑定及 batch=1，并拒绝 draft 或
+native batch scheduler。ASGI 锁覆盖推理响应与流式清理；runtime proxy 跟踪
+`handle_request` 的执行区间与流式 generator 的准备/清理区间，snapshot 仅在这些
+区间全部结束时读取。初始化不采集
+profiling，服务开始前开启，入口结束时关闭。断流后 worker 未停则封闭后续推理，
+不把仍在变动的 Timer 用于下一条记录。单请求窗口同时核对 native 与 SSE 计数。
+
+2026-10-09 新隔离服务完成 HTTP 阶段单图验收，输入/输出/decode 为 570/95/94，
+视觉编码 166.30 ms、prefill 426.48 ms、decode 12020.47 ms，HTTP TTFT 629.84 ms。
+随后在另一新服务同时提交 PS20 indoor 001/114，提交时间相差 0.106 ms；114 先执行，
+输出/decode 为 75/74，001 为 95/94。两个前后快照窗口首尾完全相接，均各含一次
+prefill/generation；001 的 HTTP TTFT 为 10681.44 ms，包含前一请求排队时间。
+这验证串行归因，不是原生并发吞吐或稳定性研究。两次服务均已关闭。
+
+完整结果、SSE 快照、metadata、代码身份、日志和资源采样分别见
+`reports/jetson-readiness-20261009/http_stage_diagnostic.json` 与
+`http_stage_concurrency_diagnostic.json`；板端目录分别为
+`artifacts/runtime/http-stage-metrics-20261009/` 与
+`artifacts/runtime/http-stage-concurrency-20261009/`。下一步完成冻结 PS20 study，
+另行验证未插桩基线，并定位 FP16 初始化内存峰值。
+
+进一步增加 generator 准备/清理状态守护后，在新目录
+`artifacts/runtime/http-stage-guard-20261009/` 重跑相同双请求验收；两个计数窗口
+再次通过完整性、非交叠和首尾连续核验。最新代码身份与全部原始证据见
+`reports/jetson-readiness-20261009/http_stage_guard_diagnostic.json`。取消 HTTP 响应
+且 native worker 仍在执行的场景由无硬件测试验证后续请求返回 503；本轮未执行
+真实 GPU 断流测试，不能把正常完成请求的证据用于该分支。
+
+## 冻结 PS20 完整验收
+
+2026-10-09 使用新 study 配置
+`configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，标准 StudyRunner
+完成 20/20 后端执行和严格 JSON 校验，失败汇总为空。三个阶段各 20 条，native
+计数、SSE usage、报告字段和连续快照窗口逐条核对通过；输入/输出/decode 总数为
+11400/1550/1530。HTTP TTFT p50 567.71 ms、E2E p50/p90/p99
+10.489/11.343/12.769 秒，墙钟输出吞吐 7.335 tokens/s。完整口径和质量限制见
+[性能记录](runtime-performance.md)。
+
+首次尝试将 raw 图片符号链接到原 data 根目录，被 `ParkingCase.resolve_image`
+拒绝，留下 20 条 input_error、零模型请求的报告。随后在新目录复制并核验 20 张
+冻结 JPEG，保留源图和路径校验；修正后的 study 才执行真实推理。前后图片哈希与
+原 engine 元数据均一致，临时服务已退出且 18080 无监听。
+
+成功运行目录为 `artifacts/runtime/ps20-stage-study-20261009-retry1/`，报告位于
+其 `package/reports/jetson_edgellm_int4_serial_stages_ps20_pilot.json`；逐请求原始
+事件和 `measurement_validation.json` 在运行目录根部。本地完整证据为
+`reports/jetson-readiness-20261009/ps20_stage_study.json`，SHA-256：
+`3373649b91764b9c1542d02f1efca3e4c80cb23b7e27a976f43796aec52058e2`。
+失败尝试单独保存为 `ps20_input_failure.json`。模型 revision 仍是配置声明，
+engine 与历史导出记录的绑定证据尚缺；不能将本轮称为完整精度等价性验收。
+
+FP16 内存排查已核验当前源码：TensorRT <10.7 的分支使用 mmap 整体 buffer
+反序列化；已安装 10.3 头文件同时提供 `deserializeCudaEngine(IStreamReader&)`，
+并注明 weight streaming 下可降低 host 内存使用。源码与头文件证据分别为
+`ps20_progress_memory_source.json` 和 `tensorrt_legacy_reader_headers.json`。
+这是可验证的下一步优化方向，尚未修改、编译或证明能解决视觉加载 OOM。
 
 1. 补齐完整 tokenizer 目录、源码补丁与二进制构建身份，核对 TensorRT 内部视觉
    预处理尺寸和布局，并将新增 Adapter 放入独立板端 checkout 进行验收。

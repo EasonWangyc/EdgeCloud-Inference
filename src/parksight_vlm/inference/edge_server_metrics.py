@@ -9,18 +9,22 @@ from typing import Any
 
 
 class _TokenCountingProxy:
-    def __init__(self, target: Any) -> None:
+    def __init__(self, target: Any, observer: Any = None) -> None:
         self._target = target
         self.token_count = 0
         self.observed = False
         self.valid = True
+        self.observer = observer
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._target, name)
 
     def generate_stream(self, *args: Any, **kwargs: Any):
-        source = iter(self._target.generate_stream(*args, **kwargs))
+        if self.observer is not None:
+            self.observer.stream_started()
+        source = None
         try:
+            source = iter(self._target.generate_stream(*args, **kwargs))
             for delta in source:
                 ids = getattr(delta, "token_ids", None)
                 if not isinstance(ids, (list, tuple)) or any(
@@ -34,11 +38,15 @@ class _TokenCountingProxy:
                 yield delta
         finally:
             close = getattr(source, "close", None)
-            if callable(close):
-                close()
+            try:
+                if callable(close):
+                    close()
+            finally:
+                if self.observer is not None:
+                    self.observer.stream_stopped()
 
 
-def install_stream_usage(api_server: Any) -> None:
+def install_stream_usage(api_server: Any, *, stage_observer: Any = None) -> None:
     """Wrap one server module in memory; leave source files and native runtime intact.
 
     Only the known Edge-LLM generator boundary is supported. Each HTTP stream
@@ -48,6 +56,10 @@ def install_stream_usage(api_server: Any) -> None:
     if not callable(original):
         raise RuntimeError("Edge-LLM server has no supported SSE generator")
     if getattr(original, "_parksight_stream_usage", False):
+        if stage_observer is not None:
+            if getattr(original, "_parksight_stage_observer", None) is not None:
+                raise RuntimeError("stage observer is already installed")
+            original._parksight_stage_observer = stage_observer
         return
     signature = inspect.signature(original)
     if not {"llm_instance", "response_id"}.issubset(signature.parameters):
@@ -56,11 +68,19 @@ def install_stream_usage(api_server: Any) -> None:
     @wraps(original)
     def measured(*args: Any, **kwargs: Any):
         bound = signature.bind(*args, **kwargs)
-        proxy = _TokenCountingProxy(bound.arguments["llm_instance"])
+        observer = measured._parksight_stage_observer
+        proxy = _TokenCountingProxy(bound.arguments["llm_instance"], observer)
         bound.arguments["llm_instance"] = proxy
         stream = iter(original(*bound.args, **bound.kwargs))
         has_usage = False
         server_error = False
+        before = None
+        measurement_error = None
+        if observer is not None:
+            try:
+                before = observer.snapshot()
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError) as error:
+                measurement_error = str(error)
         try:
             for event in stream:
                 if isinstance(event, str) and event.strip() == "data: [DONE]":
@@ -72,6 +92,15 @@ def install_stream_usage(api_server: Any) -> None:
                             # Prompt/phase counts are not exposed by this boundary.
                             "usage": {"completion_tokens": proxy.token_count},
                         }
+                        if observer is not None:
+                            try:
+                                if before is None:
+                                    raise ValueError(measurement_error or "initial snapshot is unavailable")
+                                extension = observer.finish(before, proxy.token_count)
+                                payload["usage"].update(extension.pop("usage"))
+                                payload.update(extension)
+                            except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
+                                payload["parksight_measurement"] = {"status": "unavailable", "reason": str(error)}
                         yield "data: " + json.dumps(payload) + "\n\n"
                     yield event
                     continue
@@ -93,6 +122,9 @@ def install_stream_usage(api_server: Any) -> None:
             close = getattr(stream, "close", None)
             if callable(close):
                 close()
+            if observer is not None:
+                observer.check_termination()
 
     measured._parksight_stream_usage = True
+    measured._parksight_stage_observer = stage_observer
     api_server._generate_stream_sse = measured

@@ -1,0 +1,27 @@
+{
+  "study_id": "jetson_edgellm_int4_serial_stages_ps20_pilot",
+  "workload_path": "../workloads/parking_risk_v1.json",
+  "manifest_path": "../../data/manifests/ps20_pilot_v1.jsonl",
+  "annotations_path": "../../data/annotations/ps20_pilot_v1.jsonl",
+  "data_root": "../../data",
+  "output_path": "../../reports/jetson_edgellm_int4_serial_stages_ps20_pilot.json",
+  "split": "test",
+  "repetitions": 1,
+  "power_mode": "15W_MODE_0",
+  "runtime": {
+    "backend": "tensorrt_edge_llm_http",
+    "backend_revision": "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "edge-http-workload-resize-serial-native-stages-v1",
+    "precision": "int4_awq",
+    "options": {
+      "base_url": "http://127.0.0.1:18080",
+      "model_name": "local",
+      "timeout_seconds": 180,
+      "stream_responses": true,
+      "reuse_http_connection": false,
+      "image_preprocessing": "workload_resize"
+    }
+  }
+}

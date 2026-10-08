@@ -44,6 +44,9 @@ def serve_prebuilt_engines(
     port: int,
     http_max_batch_size: int = 1,
     stream_usage: bool = False,
+    native_binding_directory: Path | None = None,
+    native_binding_sha256: str | None = None,
+    serial_stage_metrics: bool = False,
     cuda_graph: str | None = None,
     pin_optimization_profiles: bool | None = None,
     profile_switch_timing: bool | None = None,
@@ -61,6 +64,8 @@ def serve_prebuilt_engines(
     int4_gemv_block_size: int | None = None,
 ) -> None:
     """加载预构建 engine，避免在 8GB Jetson 上隐式执行模型导出。"""
+    if serial_stage_metrics and (http_max_batch_size != 1 or native_binding_directory is None):
+        raise ValueError("serial stage metrics require batch size 1 and an explicit candidate binding")
     configure_cuda_graph(cuda_graph)
     configure_profile_contexts(pin_optimization_profiles)
     configure_profile_switch_timing(profile_switch_timing)
@@ -102,12 +107,37 @@ def serve_prebuilt_engines(
         llm_engine_root=llm_engine_root,
         visual_engine_root=visual_engine_root,
     )
-    llm = LLM(
-        engine_dir=str(llm_root),
-        visual_engine_dir=str(visual_root),
-        max_batch_size=http_max_batch_size,
-    )
-    llm.serve(host=host, port=port)
+    options = dict(engine_dir=str(llm_root), visual_engine_dir=str(visual_root),
+                   max_batch_size=http_max_batch_size)
+    if native_binding_directory is not None:
+        from experimental.server import engine
+        from parksight_vlm.inference.edge_native import construct_with_binding, load_native_binding
+
+        if native_binding_sha256 is None:
+            raise ValueError("native binding override requires its SHA-256")
+        runtime = load_native_binding(native_binding_directory, native_binding_sha256)
+        if serial_stage_metrics:
+            if not callable(getattr(runtime, "get_stage_timing_snapshot", None)):
+                raise ValueError("candidate binding does not expose stage timing snapshots")
+            runtime.set_profiling_enabled(False)
+        llm = construct_with_binding(engine, runtime, **options)
+    elif native_binding_sha256 is not None:
+        raise ValueError("native binding SHA-256 requires a directory")
+    else:
+        llm = LLM(**options)
+    observer = None
+    if serial_stage_metrics:
+        from experimental.server import api_server
+        from parksight_vlm.inference.edge_stage_metrics import install_serial_stage_metrics
+
+        observer = install_serial_stage_metrics(api_server, llm)
+        llm._rt.set_profiling_enabled(True)
+    try:
+        llm.serve(host=host, port=port)
+    finally:
+        if observer is not None:
+            observer.close()
+            llm._rt.set_profiling_enabled(False)
 
 
 def deployment_readiness(
@@ -171,6 +201,9 @@ def build_runtime_metadata(
     runtime_variant_id: str | None = None,
     patch_chain_verification: Mapping[str, Any] | None = None,
     stream_usage: bool = False,
+    native_binding_directory: Path | None = None,
+    native_binding_sha256: str | None = None,
+    serial_stage_metrics: bool = False,
 ) -> dict[str, Any]:
     """构造一次服务启动的 engine 与 runtime 开关身份。"""
     metadata = {
@@ -184,6 +217,7 @@ def build_runtime_metadata(
         "plugin_path": str(plugin_path.resolve()) if plugin_path else os.environ.get("EDGELLM_PLUGIN_PATH"),
         "options": {
             "stream_usage": stream_usage,
+            "serial_stage_metrics": serial_stage_metrics,
             "cuda_graph": cuda_graph or "default",
             "pin_optimization_profiles": _option_state(pin_optimization_profiles),
             "profile_switch_timing": _option_state(profile_switch_timing),
@@ -244,7 +278,33 @@ def build_runtime_metadata(
         metadata["stream_usage_extension"] = {
             "source": _artifact_identity(Path(edge_server_metrics.__file__)),
             "count_boundary": "Native StreamDelta.token_ids, including special token IDs",
-            "unknown_fields": ["prompt_tokens", "decode_tokens", "prefill_ms", "decode_ms"],
+            "unknown_fields": (
+                ["model_generate_ms", "backend_end_to_end_ms"] if serial_stage_metrics
+                else ["prompt_tokens", "decode_tokens", "prefill_ms", "decode_ms"]
+            ),
+            "conditional_fields": (
+                ["prompt_tokens", "decode_tokens", "vision_encode_ms", "prefill_ms", "decode_ms"]
+                if serial_stage_metrics else []
+            ),
+        }
+    if native_binding_directory is not None:
+        from parksight_vlm.inference import edge_native
+
+        if native_binding_sha256 is None:
+            raise ValueError("native binding override requires its SHA-256")
+        metadata["native_binding_override"] = {
+            "module": edge_native.binding_identity(native_binding_directory, native_binding_sha256),
+            "loader_source": _artifact_identity(Path(edge_native.__file__)),
+        }
+    if serial_stage_metrics:
+        from parksight_vlm.inference import edge_stage_metrics
+
+        metadata["serial_stage_extension"] = {
+            "source": _artifact_identity(Path(edge_stage_metrics.__file__)),
+            "mode": "serial_native_cuda_events",
+            "admission": "One complete HTTP inference response at a time; no native batch scheduler",
+            "boundary": "Cumulative native count and CUDA event snapshot differences while workers are idle",
+            "profiling": True,
         }
     return metadata
 
@@ -558,6 +618,12 @@ def main(argv: list[str] | None = None) -> int:
         "--stream-usage", action="store_true",
         help="Emit terminal SSE completion usage counted from native stream token IDs",
     )
+    parser.add_argument("--native-binding-directory", type=Path,
+                        help="Isolated candidate binding; requires --native-binding-sha256")
+    parser.add_argument("--native-binding-sha256",
+                        help="Expected SHA-256 of the candidate native .so")
+    parser.add_argument("--serial-stage-metrics", action="store_true",
+                        help="Exclusive HTTP measurement with native CUDA stage timings; implies --stream-usage")
     parser.add_argument(
         "--http-max-batch-size",
         type=int,
@@ -706,8 +772,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    binding_override = None
+    if args.native_binding_directory is not None or args.native_binding_sha256 is not None:
+        if args.native_binding_directory is None or args.native_binding_sha256 is None:
+            parser.error("native binding override requires both directory and SHA-256")
+        from parksight_vlm.inference.edge_native import binding_identity
+        try:
+            binding_override = binding_identity(args.native_binding_directory, args.native_binding_sha256)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+
     if args.http_max_batch_size <= 0:
         parser.error("--http-max-batch-size must be positive")
+    if args.serial_stage_metrics:
+        if args.http_max_batch_size != 1 or args.native_binding_directory is None:
+            parser.error("serial stage metrics require batch size 1 and an explicit candidate binding")
+        args.stream_usage = True
 
     try:
         runtime_variant_id = apply_runtime_variant(args)
@@ -733,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
             edge_llm_root=args.edge_llm_root,
             plugin_path=args.plugin_path,
         )
+        if binding_override is not None:
+            report["native_binding_override"] = binding_override
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ready"] else 2
 
@@ -797,6 +879,9 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_variant_id=runtime_variant_id,
                 patch_chain_verification=patch_chain_verification,
                 stream_usage=args.stream_usage,
+                native_binding_directory=args.native_binding_directory,
+                native_binding_sha256=args.native_binding_sha256,
+                serial_stage_metrics=args.serial_stage_metrics,
             ),
         )
     serve_prebuilt_engines(
@@ -806,6 +891,9 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         http_max_batch_size=args.http_max_batch_size,
         stream_usage=args.stream_usage,
+        native_binding_directory=args.native_binding_directory,
+        native_binding_sha256=args.native_binding_sha256,
+        serial_stage_metrics=args.serial_stage_metrics,
         cuda_graph=args.cuda_graph,
         pin_optimization_profiles=args.pin_optimization_profiles,
         profile_switch_timing=args.profile_switch_timing,

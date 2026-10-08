@@ -259,6 +259,47 @@ export LD_LIBRARY_PATH=$JETSON_PY_CUDA_LIB:$EDGE_LLM_ROOT/build:$LD_LIBRARY_PATH
 完整计数边界见 [运行时指标](runtime-performance.md)。开启前先将新增入口及 Module
 部署到独立板端 checkout，不覆盖已有未提交工作树。
 
+候选 binding 不能只靠 `PYTHONPATH` 选择，upstream loader 会重新按文件路径导入。
+使用独立包中的当前入口明确指定目录与实际 SHA-256；两项缺一或哈希不匹配时拒绝
+启动，`--check-only` 可先验证且不加载 GPU。示例沿用已验收的 INT4 产物，不设置
+weight streaming 预算；仅提供 completion usage，尚不回传阶段时间：
+
+```bash
+.venv-jetson/bin/python scripts/serve_edgellm.py \
+  --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
+  --engine-root artifacts/engines/qwen3_vl_2b_int4_awq_i768_k1024 \
+  --native-binding-directory artifacts/runtime/native-timing-20261008/binding-metrics-20261009/binding \
+  --native-binding-sha256 6dae87aed5c65afeb42a393e73f2346cb00f8af2c03f6c3e47dde36d5a2e79db \
+  --stream-usage --host 127.0.0.1 --port 18080 \
+  --runtime-metadata-output reports/runtime/新运行名.runtime.json
+```
+
+该目录与哈希只适用于本次候选，重新编译后使用新哈希。2026-10-09 隔离目录的
+真实 HTTP 单图验收已完成，过程和测量边界见 [Jetson 就绪记录](jetson-readiness.md)。
+
+在该命令增加 `--serial-stage-metrics` 可回传实际 prompt/decode 计数及
+vision/prefill/decode CUDA event 时间。该测量模式要求 batch=1、无 draft model、
+无 native batch scheduler；在 engine 初始化之后才启用 profiling，并锁住整个
+HTTP 推理响应。所有推理请求串行准入，排队会增加 HTTP TTFT；不要用它衡量默认
+服务的并发吞吐。普通启动行为不变，该开关自动启用 stream usage。
+
+快照仅在 native worker 停止时读取，并核对单次 prefill/generation、SSE 输出计数
+和实际 vanilla decode stage 次数。无法核对时保留 completion usage，但不回传
+不可信的阶段数据，SSE 扩展记录 `parksight_measurement.status="unavailable"`。
+若响应结束后 native worker 仍在执行，后续推理返回 503，需重启该测量服务。
+当前阶段扩展只针对流式响应；非流式请求同样串行，但不获得该扩展。
+
+新冻结 study 入口（使用上述串行测量服务、localhost 18080）：
+
+```bash
+PYTHONPATH=src .venv-jetson/bin/python -m parksight_vlm.app.run_study \
+  --config configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json
+```
+
+2026-10-09 已在独立板端目录完成该配置的 PS20 全部 20 张图片，阶段覆盖与原始
+SSE 计数核验通过。正式 report 不覆盖历史 FP16/INT4 study；原始 trace 与脚本身份
+随本次运行归档，详细结果及质量限制见 [性能记录](runtime-performance.md)。
+
 另开一个 Jetson SSH 终端验证：
 
 ```bash
