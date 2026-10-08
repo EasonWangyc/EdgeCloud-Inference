@@ -110,3 +110,25 @@ class ConcurrentStudyTests(unittest.TestCase):
         for value in (0, -1, True, 1.5):
             with self.subTest(value=value), self.assertRaises(StudyValidationError):
                 StudyRunner().run(self.catalog, WorkerRuntime(), self.study, concurrency=value)
+
+    def test_worker_cleanup_failure_does_not_leak_other_workers(self) -> None:
+        workers = []
+        factory_lock = Lock()
+        barrier = Barrier(2)
+
+        class CleanupRuntime(WorkerRuntime):
+            def close(self):
+                super().close()
+                raise RuntimeError("worker cleanup failed")
+
+        def factory():
+            with factory_lock:
+                worker = CleanupRuntime(barrier)
+                workers.append(worker)
+                return worker
+
+        with self.assertRaisesRegex(RuntimeError, "worker cleanup failed"):
+            StudyRunner().run(self.catalog, WorkerRuntime(), self.study,
+                              concurrency=2, runtime_factory=factory)
+        self.assertEqual(len(workers), 2)
+        self.assertTrue(all(worker.closed for worker in workers))

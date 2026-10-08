@@ -209,6 +209,17 @@ HTTP Adapter 会在流式读取、响应解析或服务端错误后关闭持久�
 不隐式重发 POST。OpenAI-compatible SSE 必须以 `[DONE]` 结束；提前断流和协议错误
 记录为运行时失败，明确的 `refusal` 或 `content_filter` 记录为模型拒答。
 
+运行时连接由创建它的调用方管理。单图 CLI 和配置研究入口在成功或异常后
+调用 `runtime.close()`；直接调用 `analyze_image(..., runtime=...)` 或
+`StudyRunner.run(..., runtime=...)` 时，调用方仍负责关闭传入的运行时。
+Edge-LLM Adapter 将关闭请求传给支持该钩子的后端；端云路由关闭两个子
+运行时，即使一侧关闭失败也继续清理另一侧。无关闭钩子的 generate-only
+后端继续兼容。
+
+并发 Runner 为每个 worker 注册清理回调，等待线程退出后关闭所有 worker；
+某个关闭回调失败也不会跳过剩余 worker。配置研究入口先保存完成的报告，
+再关闭主运行时；关闭失败仍向调用方报错，已写出的推理证据保留。
+
 三类配置必须使用相同的 workload、模型 revision 和冻结测试集。服务器报告用于正确性
 参考；Jetson Transformers 与 Jetson Edge-LLM 报告用于同机性能比较。
 

@@ -171,6 +171,9 @@ class OpenAICompatibleHttpBackend:
             isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0
         ):
             raise RuntimeError("prompt_tokens must be a non-negative integer")
+        # Optional server extension: do not infer decode count from completion
+        # tokens when the server's phase timing boundaries are unknown.
+        decode_tokens = usage.get("decode_tokens") if isinstance(usage, dict) else None
         client_tpot_ms = None
         if output_tokens is not None and output_tokens > 1 and len(arrivals.content_arrival_ms) > 1:
             client_tpot_ms = (
@@ -204,6 +207,7 @@ class OpenAICompatibleHttpBackend:
             ),
             output_tokens=output_tokens,
             input_tokens=input_tokens,
+            decode_tokens=decode_tokens,
             stream_timings=arrivals,
         )
 
@@ -509,6 +513,12 @@ class EdgeLlmRuntime(RiskRuntime):
             ),
         )
         self._backend = backend
+
+    def close(self) -> None:
+        """释放支持关闭钩子的后端；保留 generate-only 后端兼容性。"""
+        close = getattr(self._backend, "close", None)
+        if callable(close):
+            close()
 
     def _generate(self, *, image_path: Path, workload: FrozenWorkload) -> RuntimeGeneration:
         return self._backend.generate(image_path=image_path, workload=workload)

@@ -143,11 +143,28 @@ class PerformanceMetrics:
     measurement_wall_seconds: float | None = None
     completed_requests_per_second: float | None = None
     wall_output_tokens_per_second: float | None = None
+    attempted_sample_count: int | None = None
+    failed_sample_count: int | None = None
+    all_request_stage_latency_ms: Mapping[str, PercentileSummary] = field(default_factory=dict)
+    failed_request_stage_latency_ms: Mapping[str, PercentileSummary] = field(default_factory=dict)
+    attempted_requests_per_second: float | None = None
+    successful_requests_per_second: float | None = None
+    decode_tokens_per_second: float | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         return {
             "successful_sample_count": self.successful_sample_count,
             "backend_completed_sample_count": self.backend_completed_sample_count,
+            "attempted_sample_count": self.attempted_sample_count,
+            "failed_sample_count": self.failed_sample_count,
+            "all_request_stage_latency_ms": {
+                stage: summary.to_mapping() for stage, summary in self.all_request_stage_latency_ms.items()
+            },
+            "failed_request_stage_latency_ms": {
+                stage: summary.to_mapping() for stage, summary in self.failed_request_stage_latency_ms.items()
+            },
+            "attempted_requests_per_second": self.attempted_requests_per_second,
+            "successful_requests_per_second": self.successful_requests_per_second,
             "cold_start_ms": self.cold_start_ms,
             "first_request_ms": self.first_request_ms,
             "stream_chunk_interval_ms": self.stream_chunk_interval_ms.to_mapping() if self.stream_chunk_interval_ms is not None else None,
@@ -159,6 +176,7 @@ class PerformanceMetrics:
                 stage: summary.to_mapping() for stage, summary in self.stage_latency_ms.items()
             },
             "tokens_per_second": self.tokens_per_second,
+            "decode_tokens_per_second": self.decode_tokens_per_second,
             "aggregate_output_tokens_per_end_to_end_second": (
                 self.aggregate_output_tokens_per_end_to_end_second
             ),

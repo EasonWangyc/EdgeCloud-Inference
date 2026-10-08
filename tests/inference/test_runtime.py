@@ -95,13 +95,19 @@ class RuntimeTests(unittest.TestCase):
 
         model = Model()
         with _ForwardPhaseProfiler(model, Torch()) as profiler:
+            self.assertIsNone(profiler.decode_token_count(output_tokens=1, batch_size=1))
             model.visual.run()
             model.language.run()
+            self.assertIsNone(profiler.decode_ms)
+            self.assertEqual(profiler.decode_token_count(output_tokens=1, batch_size=1), 0)
             model.language.run()
 
         self.assertIsNotNone(profiler.vision_encode_ms)
         self.assertIsNotNone(profiler.prefill_ms)
         self.assertIsNotNone(profiler.decode_ms)
+        self.assertEqual(profiler.decode_token_count(output_tokens=2, batch_size=1), 1)
+        self.assertIsNone(profiler.decode_token_count(output_tokens=3, batch_size=1))
+        self.assertIsNone(profiler.decode_token_count(output_tokens=2, batch_size=2))
         self.assertIs(
             _find_profile_module(dict(model.named_modules()), "visual"),
             model.visual,
@@ -201,7 +207,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record.to_mapping()["failure"], None)
 
     def test_edge_llm_runtime_preserves_invalid_json_failure(self) -> None:
-        backend = StaticBackend(RuntimeGeneration(raw_output="not-json", output_tokens=2))
+        backend = StaticBackend(RuntimeGeneration(raw_output="not-json", output_tokens=2, decode_tokens=1))
         runtime = EdgeLlmRuntime(
             data_root=FIXTURE_ROOT,
             backend=backend,
@@ -218,6 +224,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record.failure.category, RuntimeFailureCategory.JSON_PARSE_ERROR)
         self.assertEqual(record.raw_output, "not-json")
         self.assertEqual(record.output_tokens, 2)
+        self.assertEqual(record.decode_tokens, 1)
+        self.assertEqual(record.to_mapping()["decode_tokens"], 1)
 
     def test_runtime_records_timeout_and_missing_input(self) -> None:
         timeout_runtime = TransformersRuntime(

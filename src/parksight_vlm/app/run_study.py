@@ -29,9 +29,10 @@ def run_configured_study(config: AppStudyConfig, *, concurrency: int = 1) -> Stu
             concurrency=concurrency,
             runtime_factory=lambda: build_runtime(config.runtime, data_root=config.data_root),
         )
+        # Preserve completed inference evidence even if subsequent cleanup fails.
+        report.write_json(config.output_path)
     finally:
         runtime.close()
-    report.write_json(config.output_path)
     return report
 
 

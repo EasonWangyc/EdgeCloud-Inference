@@ -36,7 +36,7 @@ class HuggingFaceQwen3VlBackend:
         *,
         model_id: str,
         model_revision: str,
-        device_map: str = "auto",
+        device_map: str | None = "auto",
         dtype: str = "auto",
         attn_implementation: str = "sdpa",
         adapter_path: str | None = None,
@@ -131,6 +131,10 @@ class HuggingFaceQwen3VlBackend:
             ),
             resource_snapshot=ResourceSnapshot(peak_memory_mb=peak_memory_mb),
             output_tokens=output_tokens,
+            decode_tokens=(
+                profiler.decode_token_count(output_tokens=output_tokens, batch_size=len(generated_ids_trimmed))
+                if profiler is not None else None
+            ),
         )
 
     def _ensure_loaded(self) -> None:
@@ -278,6 +282,17 @@ class _ForwardPhaseProfiler:
     @property
     def decode_ms(self) -> float | None:
         return sum(self._language_calls[1:]) if len(self._language_calls) > 1 else None
+
+    def decode_token_count(self, *, output_tokens: int, batch_size: int) -> int | None:
+        """Count observed single-sequence decode forwards, excluding prefill.
+
+        Report only when the observed forwards agree with normal autoregressive
+        generation. Other batching or forward patterns retain unknown counts.
+        """
+        if not self._language_calls or batch_size != 1 or output_tokens < 1:
+            return None
+        observed = len(self._language_calls) - 1
+        return observed if observed == output_tokens - 1 else None
 
 
 class _FirstTokenTimingProbe:

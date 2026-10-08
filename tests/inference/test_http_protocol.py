@@ -61,6 +61,24 @@ class Response:
 
 
 class HttpProtocolTests(unittest.TestCase):
+    def test_explicit_decode_count_is_preserved_without_inference_from_completion_usage(self):
+        for count in (None, 4, True, -1, 1.5, 6):
+            with self.subTest(count=count):
+                payload = {
+                    "choices": [{"message": {"role": "assistant", "content": json.dumps(ASSESSMENT)}}],
+                    "usage": {"completion_tokens": 5}, "timings_ms": {"decode_ms": 40},
+                }
+                if count is not None:
+                    payload["usage"]["decode_tokens"] = count
+                response = Response([json.dumps(payload).encode()], stream=False)
+                with patch("parksight_vlm.inference.edge_llm.urlopen", return_value=response):
+                    if count is None or count == 4:
+                        generation = EdgeLlmHttpBackend(stream_responses=False).generate(image_path=IMAGE, workload=WORKLOAD)
+                        self.assertEqual(generation.decode_tokens, count)
+                    else:
+                        with self.assertRaises(ValueError):
+                            EdgeLlmHttpBackend(stream_responses=False).generate(image_path=IMAGE, workload=WORKLOAD)
+
     def test_stream_timing_uses_content_events_and_server_token_usage(self) -> None:
         response = Response([
             event({"choices": [{"delta": {"role": "assistant"}}]}),

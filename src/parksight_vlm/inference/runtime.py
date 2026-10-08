@@ -190,6 +190,7 @@ class RuntimeGeneration:
     output_tokens: int | None = None
     input_tokens: int | None = None
     stream_timings: StreamTimings = field(default_factory=StreamTimings)
+    decode_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.raw_output, str):
@@ -206,6 +207,7 @@ class RuntimeGeneration:
             or self.input_tokens < 0
         ):
             raise ValueError("input_tokens must be a non-negative integer")
+        _validate_decode_tokens(self.decode_tokens, self.output_tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,10 +227,12 @@ class InferenceRecord:
     routing_decision: dict[str, Any] | None = None
     input_tokens: int | None = None
     stream_timings: StreamTimings = field(default_factory=StreamTimings)
+    decode_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if (self.assessment is None) == (self.failure is None):
             raise ValueError("record must contain exactly one of assessment or failure")
+        _validate_decode_tokens(self.decode_tokens, self.output_tokens)
 
     @property
     def succeeded(self) -> bool:
@@ -251,6 +255,7 @@ class InferenceRecord:
             "routing_decision": self.routing_decision,
             "input_tokens": self.input_tokens,
             "stream_timings": self.stream_timings.to_mapping(),
+            "decode_tokens": self.decode_tokens,
         }
 
 
@@ -308,11 +313,20 @@ class RiskRuntime(ABC):
             output_tokens=output_tokens,
             input_tokens=generation.input_tokens if generation is not None else None,
             stream_timings=generation.stream_timings if generation is not None else StreamTimings(),
+            decode_tokens=generation.decode_tokens if generation is not None else None,
         )
 
     @abstractmethod
     def _generate(self, *, image_path: Path, workload: FrozenWorkload) -> RuntimeGeneration:
         """调用具体后端，并且只返回实际测得的事实。"""
+
+
+def _validate_decode_tokens(value: int | None, output_tokens: int | None) -> None:
+    if value is not None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("decode_tokens must be a non-negative integer")
+        if output_tokens is not None and value > output_tokens:
+            raise ValueError("decode_tokens cannot exceed output_tokens")
 
 
 def _validate_measurement(value: float | None, field_name: str) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from threading import Lock, local
 import time
 from collections.abc import Callable, Mapping
@@ -62,6 +63,7 @@ class StudyRunner:
             worker_state = local()
             worker_runtimes: list[RiskRuntime] = []
             worker_lock = Lock()
+            worker_cleanup = ExitStack()
 
             def analyze(case: ParkingCase) -> InferenceRecord:
                 if not hasattr(worker_state, "runtime"):
@@ -71,17 +73,15 @@ class StudyRunner:
                         if worker_state.runtime is runtime or any(worker is worker_state.runtime for worker in worker_runtimes):
                             raise StudyValidationError("workers must not share a runtime instance")
                         worker_runtimes.append(worker_state.runtime)
+                        worker_cleanup.callback(worker_state.runtime.close)
                     if worker_state.runtime.identity != runtime.identity:
                         raise StudyValidationError("worker runtime identity differs from study runtime")
                 return worker_state.runtime.analyze(case, study.workload)
 
-            try:
+            with worker_cleanup:
                 with ThreadPoolExecutor(max_workers=concurrency) as executor:
                     # map 保持提交顺序；等待中的任务不计入单请求 TTFT。
                     records = tuple(executor.map(analyze, jobs))
-            finally:
-                for worker in worker_runtimes:
-                    worker.close()
         measurement_wall_seconds = time.perf_counter() - measurement_start
         references = {
             parking_case.case_id: parking_case.reference_assessment
