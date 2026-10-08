@@ -244,6 +244,7 @@ class DeploymentTests(unittest.TestCase):
                         / "jetson_orin_nano_int4_gemv_runtime_v1.json"
                     ),
                     runtime_variant_id="block512_n2",
+                    stream_usage=True,
                 )
 
         self.assertEqual(metadata["engines"]["llm"]["size_bytes"], len(b"llm-engine"))
@@ -267,6 +268,11 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(metadata["options"]["int4_gemv_block_size"], "512")
         self.assertEqual(metadata["environment"]["EDGELLM_INT4_GEMV_BLOCK_SIZE"], "512")
         self.assertEqual(metadata["runtime_tuning"]["variant_id"], "block512_n2")
+        self.assertTrue(metadata["options"]["stream_usage"])
+        extension_path = Path(__file__).resolve().parents[1] / "src/parksight_vlm/inference/edge_server_metrics.py"
+        self.assertEqual(metadata["stream_usage_extension"]["source"]["sha256"],
+                         hashlib.sha256(extension_path.read_bytes()).hexdigest())
+        self.assertIn("decode_ms", metadata["stream_usage_extension"]["unknown_fields"])
         self.assertTrue(metadata["runtime_tuning"]["config_path"].endswith("jetson_orin_nano_int4_gemv_runtime_v1.json"))
 
     def test_runtime_metadata_binds_patch_hashes(self) -> None:
@@ -657,6 +663,28 @@ class DeploymentTests(unittest.TestCase):
             },
         )
         self.assertEqual(calls["serve"], {"host": "127.0.0.1", "port": 8000})
+
+    def test_server_installs_usage_extension_only_when_requested(self) -> None:
+        api = SimpleNamespace(_generate_stream_sse=lambda llm_instance, response_id: iter(()))
+        original = api._generate_stream_sse
+        calls = []
+        class FakeLlm:
+            def __init__(self, **kwargs):
+                calls.append(bool(getattr(api._generate_stream_sse, "_parksight_stream_usage", False)))
+            def serve(self, **kwargs):
+                pass
+        server = ModuleType("experimental.server")
+        server.LLM = FakeLlm
+        server.api_server = api
+        with patch.dict("sys.modules", {
+            "experimental": ModuleType("experimental"), "experimental.server": server,
+            "uvicorn": ModuleType("uvicorn"),
+        }):
+            serve_prebuilt_engines(engine_root=Path("/work/engines"), host="127.0.0.1", port=8000)
+            self.assertIs(api._generate_stream_sse, original)
+            serve_prebuilt_engines(engine_root=Path("/work/engines"), host="127.0.0.1", port=8000,
+                                  stream_usage=True)
+        self.assertEqual(calls, [False, True])
 
 
 if __name__ == "__main__":

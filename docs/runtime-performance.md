@@ -66,6 +66,93 @@ token、115 次语言模型 forward，decode 计数为 114，阶段总时间为 
 `reports/vllm-wsl/failure-metrics-20261008/recomputed_metrics.json`，
 原始报告不回写。未记录的墙钟窗口、input usage 和 stream arrival 保持缺失。
 
+## TensorRT 低层 benchmark 指标
+
+Edge-LLM HTTP Adapter 默认 `image_preprocessing="source"`，保留已有实验的原图路径。
+新板端配置 `configs/studies/jetson_edgellm_fp16_workload_resize_ps20_pilot.json`
+显式使用 `workload_resize`：客户端按冻结尺寸生成 RGB bicubic PNG，直到 HTTP
+响应结束才删除临时目录。图片解码、缩放、编码和临时文件准备纳入
+`preprocess_ms`、客户端总 TTFT 及调用方端到端计时；HTTP TTFT 和服务端阶段时间
+保持原来的边界。请求失败、PNG 写入失败也清理文件并丢弃持久连接。
+
+路径协议要求客户端与 server 能访问同一文件系统及临时目录；这份配置用于
+Jetson 同机运行。SSH 端口转发不提供共享文件系统，不能直接把 WSL 的临时路径
+传给 Jetson。2026-10-08 离线核验 20 张 PS20 图片，实际 Pillow 生成的 PNG
+与 vLLM `workload_resize` 上传图片逐像素一致，原图不变且临时目录全部清理。
+原始结果见 `reports/jetson-readiness-20261008/image_preprocessing_verification.json`；
+HTTP 调用被 mock，没有执行板端推理，也未验证 TensorRT 内部 patch/tensor 布局。
+
+`scripts/run_edgellm_benchmark.py` 将服务端明确返回的 decode token 数写入
+JSONL 的可选 `decode_tokens`。汇总只配对同一条 completed 记录中的 token 数
+和耗时；一条记录只有 token、另一条只有时间时，不计算两者之间的速率。
+总体与每个 repetition 都保存参与速率计算的 `*_sample_count`。
+
+低层 JSONL 的历史 `decode_tokens_per_second` 仍表示完整 output token 数除以
+decode 时间；新增 `measured_decode_tokens_per_second` 使用明确的 decode 计数。
+这与 StudyReport 的严格 `decode_tokens_per_second` 口径对应。未提供计数的旧
+JSONL 和直接 C++ benchmark 不自动推定 `N-1`，新字段保持 null。部分字段缺失时，
+速率仅覆盖有完整配对的请求，不能解释为整个 workload 的吞吐。
+
+2026-10-08 板端 server 源码检查发现流式异常会返回
+`finish_reason="error"` 后继续发送 `[DONE]`。HTTP Adapter 将这种响应记为
+运行时失败，即使已经收到符合 schema 的文本也不计为成功。当前 SSE 路径未返回
+usage 或阶段计时；非流式 `prompt_tokens=0` 是 server 占位值，不能当作真实输入
+token 数。补齐服务端测量之前，仅已有客户端 TTFT、文本片段到达和端到端时延
+具备可采集路径，阶段速率不补估。
+
+### Edge-LLM 可选流式 usage
+
+新增 server 启动选项 `--stream-usage` 在进程内包装已核验的
+`experimental.server.api_server._generate_stream_sse`。每个请求独立汇总
+`StreamDelta.token_ids`，在 `[DONE]` 前发送空 choices 的 usage 事件；它包括
+未显示为文本的特殊 token，不是字符数或 SSE 事件数。启动时显式开启后，该进程的
+流式响应均可附带 usage，不依赖请求的 `stream_options`。默认关闭，现有板端源码
+和生成参数不改写；已经包含 usage 的响应原样保留。
+
+缺少有效 token IDs、没有观察到任何 delta 或 error 结束时，不补估 token 数。
+扩展不返回占位 prompt 计数，也不从 completion 数推定 decode 计数。初始化时
+检查 generator 签名，runtime metadata 记录开关、包装代码 SHA-256 和计数边界。
+普通与工具 SSE 分支共用的 `generate_stream` 调用均可经过包装；当前已验证普通
+单图 SSE 的离线集成和板端 native GPU 诊断，尚未验收 HTTP 传输或工具调用。
+
+2026-10-08 使用采集的 Jetson SSE 函数、模拟 native delta 和真实客户端解析器，
+验证两个文本事件可包含四个 token IDs，得到 completion_tokens=4，input/decode
+计数和 decode 时间保持 null。证据见
+`reports/jetson-readiness-20261008/stream_usage_verification.json` 和源码快照；
+该离线结果不作为 GPU 吞吐证据。
+
+### Edge-LLM native Timer 桥接准备
+
+已核验的 C++ Timer 记录 CUDA event 时间，现有 Python binding 尚未暴露其数据。
+`scripts/prepare_edgellm_timing_binding.py` 生成绑定源码身份的补丁，准备导出每个
+原始 stage ID 的 `total_gpu_time_ms` 和 `run_count`。这些值是累计值，不是逐请求
+报告；必须在 worker 全部停止执行时读取，且开启实际 profiling 才可能有数据。
+在独占、串行验收中核对快照、stage 名称及包围范围后，才可映射为报告阶段字段。
+
+2026-10-08 已对采集的 Jetson CRLF 源码验证补丁可应用并保持其他内容与行尾；
+随后已完成独立 binding 编译和新进程导入；默认 profiling 为 false，初始快照为空。
+初次导入未执行模型；后续单图 CUDA event 验收结果如下。SSE 阶段回传尚未接入，
+现有研究报告中的阶段指标仍为 null。
+补丁、准备记录和验证结果保存在
+`reports/jetson-readiness-20261008/native_stage_timing_binding.patch` 及相关 JSON。
+
+板端单图诊断入口为 `scripts/run_edgellm_native_probe.py`，默认不执行模型；
+显式执行时保存候选绑定、engine、workload 和输入身份，以及初始化失败事实。
+其流式 TTFT 不包含 HTTP 传输，不能填写 HTTP TTFT 字段。FP16 本轮在视觉 engine
+加载阶段 OOM，没有生成结果；不补填 token 数或阶段时间。已有 INT4 引擎可完成
+初始化；upstream metrics 的继承成员绑定错误已在独立候选绑定中修复。
+各次失败与成功初始化的边界见 [Jetson 就绪记录](jetson-readiness.md)。
+
+2026-10-09 已有 INT4 产物完成一次带 profiling 的 native 单图诊断：SSE usage 与
+native generated 计数均为 95，computed/reused prompt 为 570/0；vision 和
+prefill 各 1 次，分别 203.98/425.85 ms，`llm_generation` 94 次共 12001.78 ms。
+已核验的 vanilla decoder 每次 decode step 包含一个该 stage；prefill 产生首个
+token，因此本次 94 次 decode 与后续 token 数吻合，对应 7.832 decode tokens/s。
+这条诊断不推广到 batch、speculative decoding、并发请求或其他 engine。
+首文本延迟 659.54 ms、流总耗时 12.670 秒仅为进程内 SSE 路径，不含 HTTP。
+严格 JSON 有效不代表风险判断正确；本阶段保留输出，不调整 prompt 或模型。
+完整记录见 `reports/jetson-readiness-20261008/native_int4_diagnostic.json`。
+
 ## vLLM 服务端指标
 
 在本机服务已启动、没有其他请求流量时运行：

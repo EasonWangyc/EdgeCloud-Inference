@@ -961,6 +961,49 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
         self.assertEqual(summary["execution"]["cold_start_ms"], 80.0)
         self.assertEqual(summary["warmup"]["first_completed_end_to_end_ms"], 80.0)
 
+    def test_benchmark_rates_do_not_pair_fields_across_requests(self) -> None:
+        from parksight_vlm.tensorrt import BenchmarkSample
+
+        samples = (
+            BenchmarkSample("count-only", 1, "completed", 100, {}),
+            BenchmarkSample("time-only", 1, "completed", None, {"decode_ms": 10}),
+        )
+        execution = summarize_benchmark_samples(samples)["execution"]
+        self.assertIsNone(execution["decode_tokens_per_second"])
+        self.assertEqual(execution["decode_tokens_per_second_sample_count"], 0)
+        self.assertIsNone(execution["repetitions"]["1"]["decode_tokens_per_second"])
+
+    def test_benchmark_rates_use_only_matching_request_pairs(self) -> None:
+        from parksight_vlm.tensorrt import BenchmarkSample
+
+        samples = (
+            BenchmarkSample("measured", 1, "completed", 10,
+                            {"decode_ms": 20, "end_to_end_ms": 40}, decode_tokens=9),
+            BenchmarkSample("missing-time", 1, "completed", 1000, {}),
+            BenchmarkSample("missing-count", 1, "completed", None, {"decode_ms": 1000}),
+            BenchmarkSample("failed", 1, "failed", 100, {"decode_ms": 1}, decode_tokens=99),
+        )
+        execution = summarize_benchmark_samples(samples)["execution"]
+        self.assertEqual(execution["decode_tokens_per_second"], 500)
+        self.assertEqual(execution["measured_decode_tokens_per_second"], 450)
+        self.assertEqual(execution["end_to_end_tokens_per_second"], 250)
+        self.assertEqual(execution["measured_decode_tokens_per_second_sample_count"], 1)
+        self.assertEqual(execution["repetitions"]["1"]["measured_decode_tokens_per_second"], 450)
+
+    def test_benchmark_decode_count_is_optional_and_validated(self) -> None:
+        from parksight_vlm.tensorrt import BenchmarkSample
+
+        row = {"sample_id": "single", "repetition": 1, "status": "completed",
+               "output_tokens": 1, "timings_ms": {"decode_ms": 0}}
+        legacy = BenchmarkSample.from_mapping(row, 1)
+        self.assertIsNone(legacy.decode_tokens)
+        self.assertIsNone(summarize_benchmark_samples([legacy])["execution"]["measured_decode_tokens_per_second"])
+        first_only = BenchmarkSample.from_mapping({**row, "decode_tokens": 0}, 1)
+        self.assertIsNone(summarize_benchmark_samples([first_only])["execution"]["measured_decode_tokens_per_second"])
+        for invalid in (True, -1, 1.5, 2):
+            with self.subTest(count=invalid), self.assertRaises(TensorRTValidationError):
+                BenchmarkSample.from_mapping({**row, "decode_tokens": invalid}, 1)
+
     def test_benchmark_summary_preserves_system_throughput_metadata(self) -> None:
         from parksight_vlm.tensorrt import BenchmarkSample
 
@@ -1154,6 +1197,7 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
                         http_round_trip_ms=25.0,
                     ),
                     output_tokens=4,
+                    decode_tokens=3,
                 )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1176,6 +1220,7 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
             )
 
         self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["decode_tokens"], 3)
         self.assertEqual(row["timings_ms"]["decode_ms"], 20.0)
         self.assertEqual(row["timings_ms"]["http_round_trip_ms"], 25.0)
         self.assertEqual(row["timings_ms"]["time_to_first_token_ms"], 12.0)

@@ -7,12 +7,16 @@ import http.client
 import json
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Iterator, Protocol
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from parksight_vlm.workload import FrozenWorkload
+
+from .images import load_workload_image
 
 from .runtime import (
     RiskRuntime,
@@ -375,6 +379,8 @@ class OpenAICompatibleHttpBackend:
                 raise RuntimeError("OpenAI-compatible choice must be an object")
             if choice.get("finish_reason") == "content_filter":
                 raise RuntimeRefusalError("model response was filtered")
+            if choice.get("finish_reason") == "error":
+                raise RuntimeError("OpenAI-compatible generation ended with a server error")
             for name in ("message", "delta"):
                 part = choice.get(name)
                 if isinstance(part, dict) and part.get("refusal"):
@@ -452,6 +458,58 @@ class OpenAICompatibleHttpBackend:
 
 class EdgeLlmHttpBackend(OpenAICompatibleHttpBackend):
     """TensorRT Edge-LLM server 的 OpenAI-compatible HTTP Adapter。"""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "http://127.0.0.1:8000",
+        model_name: str = "local",
+        timeout_seconds: float = 120.0,
+        stream_responses: bool = True,
+        reuse_http_connection: bool = False,
+        api_key: str | None = None,
+        image_preprocessing: str = "source",
+    ) -> None:
+        if image_preprocessing not in ("source", "workload_resize"):
+            raise ValueError("image_preprocessing must be source or workload_resize")
+        super().__init__(
+            base_url=base_url, model_name=model_name, timeout_seconds=timeout_seconds,
+            stream_responses=stream_responses, reuse_http_connection=reuse_http_connection,
+            api_key=api_key,
+        )
+        self._image_preprocessing = image_preprocessing
+
+    def generate(self, *, image_path: Path, workload: FrozenWorkload) -> RuntimeGeneration:
+        """Keep the resized PNG alive until the server has finished reading it.
+
+        This path-based protocol requires the client and server to share the
+        same filesystem and access to the client's temporary directory.
+        """
+        if self._image_preprocessing == "source":
+            return super().generate(image_path=image_path, workload=workload)
+        try:
+            started = time.perf_counter()
+            with TemporaryDirectory(prefix="parksight-edgellm-") as directory:
+                prepared_path = Path(directory) / "image.png"
+                image = load_workload_image(image_path, workload)
+                try:
+                    image.save(prepared_path, format="PNG")
+                finally:
+                    image.close()
+                prepare_ms = (time.perf_counter() - started) * 1000.0
+                generation = super().generate(image_path=prepared_path, workload=workload)
+                timings = generation.stage_timings
+                return replace(generation, stage_timings=replace(
+                    timings,
+                    preprocess_ms=prepare_ms + (timings.preprocess_ms or 0.0),
+                    client_total_ttft_ms=(
+                        prepare_ms + timings.client_total_ttft_ms
+                        if timings.client_total_ttft_ms is not None else None
+                    ),
+                ))
+        except Exception:
+            self.close()
+            raise
 
     def build_request_payload(
         self,

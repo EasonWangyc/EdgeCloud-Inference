@@ -251,7 +251,13 @@ export LD_LIBRARY_PATH=$JETSON_PY_CUDA_LIB:$EDGE_LLM_ROOT/build:$LD_LIBRARY_PATH
   --port 8000
 ```
 
-`--weight-streaming-budget-bytes 0` 依赖项目保存的 runtime 补丁，在创建 context 前调用 `setWeightStreamingBudgetV2(0)`。不设置预算时，TensorRT 会尝试让约 3.44 GiB streamable weights 全部驻留 GPU，并在本设备上 OOM。0 预算能够运行，但会显著降低生成速度；后续应在 INT4 或更大可用内存条件下重新调优。现有 INT4 engine 未按 weight streaming 构建，启动时不要传该参数。
+`--weight-streaming-budget-bytes 0` 依赖项目保存的 runtime 补丁，在创建 context 前调用 `setWeightStreamingBudgetV2(0)`。不设置预算时，TensorRT 会尝试让约 3.44 GiB streamable weights 全部驻留 GPU，并在本设备上 OOM。2026-08 的 0 预算实验完成过推理，但 2026-10-08 当前 runtime 的隔离复验在视觉 engine 加载时仍出现 OOM；0 预算不保证整个 VLM 能加载。保留两次实验身份，下一步定位初始化峰值，详情见 [板端就绪记录](jetson-readiness.md)。现有 INT4 engine 未按 weight streaming 构建，启动时不要传该参数。
+
+新指标验收可在上述启动命令中增加 `--stream-usage`，并通过
+`--runtime-metadata-output reports/runtime/新运行名.runtime.json` 保存包装代码身份。
+该开关默认关闭，仅包装服务进程内的 SSE generator，不修改 Edge-LLM checkout。
+完整计数边界见 [运行时指标](runtime-performance.md)。开启前先将新增入口及 Module
+部署到独立板端 checkout，不覆盖已有未提交工作树。
 
 另开一个 Jetson SSH 终端验证：
 

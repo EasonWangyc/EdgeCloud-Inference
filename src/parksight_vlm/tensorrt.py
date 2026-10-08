@@ -535,13 +535,14 @@ class BenchmarkSample:
     output_tokens: int | None
     timings_ms: Mapping[str, float]
     failure: Mapping[str, Any] | None = None
+    decode_tokens: int | None = None
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any], line_number: int) -> "BenchmarkSample":
         required_fields = {"sample_id", "repetition", "status", "output_tokens", "timings_ms"}
         actual_fields = set(payload)
         missing_fields = required_fields - actual_fields
-        unexpected_fields = actual_fields - required_fields - {"failure"}
+        unexpected_fields = actual_fields - required_fields - {"failure", "decode_tokens"}
         if missing_fields or unexpected_fields:
             raise TensorRTValidationError(
                 f"invalid benchmark line {line_number} fields; "
@@ -555,6 +556,15 @@ class BenchmarkSample:
         output_tokens = payload["output_tokens"]
         if output_tokens is not None:
             output_tokens = _parse_non_negative_int(output_tokens, f"benchmark line {line_number}.output_tokens")
+        decode_tokens = payload.get("decode_tokens")
+        if decode_tokens is not None:
+            decode_tokens = _parse_non_negative_int(
+                decode_tokens, f"benchmark line {line_number}.decode_tokens"
+            )
+            if output_tokens is not None and decode_tokens > output_tokens:
+                raise TensorRTValidationError(
+                    f"benchmark line {line_number}.decode_tokens exceeds output_tokens"
+                )
         timings_payload = _require_mapping(payload["timings_ms"], f"benchmark line {line_number}.timings_ms")
         timings: dict[str, float] = {}
         for name, value in timings_payload.items():
@@ -569,7 +579,7 @@ class BenchmarkSample:
             raise TensorRTValidationError(
                 f"benchmark line {line_number}.failure must be an object or null"
             )
-        return cls(sample_id, repetition, status, output_tokens, timings, failure)
+        return cls(sample_id, repetition, status, output_tokens, timings, failure, decode_tokens)
 
 
 def load_benchmark_samples(path: Path | str) -> tuple[BenchmarkSample, ...]:
@@ -611,10 +621,6 @@ def summarize_benchmark_samples(
         for sample in completed
         if sample.output_tokens is not None
     ]
-    decode_values = stage_values.get("decode_ms", [])
-    e2e_values = stage_values.get("end_to_end_ms", [])
-    decode_tokens_per_second = _tokens_per_second(output_values, decode_values)
-    e2e_tokens_per_second = _tokens_per_second(output_values, e2e_values)
     repetition_summaries = _summarize_repetitions(samples)
     warmup = list(warmup_samples or ())
     warmup_completed = [sample for sample in warmup if sample.status == "completed"]
@@ -650,8 +656,7 @@ def summarize_benchmark_samples(
             "stage_latency_ms": {
                 stage: _numeric_summary(values) for stage, values in sorted(stage_values.items())
             },
-            "decode_tokens_per_second": decode_tokens_per_second,
-            "end_to_end_tokens_per_second": e2e_tokens_per_second,
+            **_sample_token_rates(completed),
             # Run-level throughput is supplied by the low-level runner. It is
             # intentionally kept separate from request-level E2E tok/s: under
             # concurrency, summing per-request rates would overcount overlap.
@@ -699,11 +704,6 @@ def _summarize_repetitions(
         for sample in completed:
             for stage, value in sample.timings_ms.items():
                 stage_values.setdefault(stage, []).append(value)
-        output_values = [
-            float(sample.output_tokens)
-            for sample in completed
-            if sample.output_tokens is not None
-        ]
         summaries[str(repetition)] = {
             "sample_count": len(group),
             "completed_sample_count": len(completed),
@@ -712,12 +712,7 @@ def _summarize_repetitions(
                 stage: _numeric_summary(values)
                 for stage, values in sorted(stage_values.items())
             },
-            "decode_tokens_per_second": _tokens_per_second(
-                output_values, stage_values.get("decode_ms", [])
-            ),
-            "end_to_end_tokens_per_second": _tokens_per_second(
-                output_values, stage_values.get("end_to_end_ms", [])
-            ),
+            **_sample_token_rates(completed),
         }
     return summaries
 
@@ -760,11 +755,32 @@ def write_json(payload: Mapping[str, Any], path: Path | str) -> None:
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _tokens_per_second(output_tokens: Sequence[float], durations_ms: Sequence[float]) -> float | None:
-    if not output_tokens or not durations_ms or len(output_tokens) != len(durations_ms):
-        return None
-    total_duration_ms = sum(durations_ms)
-    return sum(output_tokens) / (total_duration_ms / 1000.0) if total_duration_ms > 0 else None
+def _sample_token_rates(samples: Sequence[BenchmarkSample]) -> dict[str, Any]:
+    """Pair counts and durations within each request; expose measurement coverage."""
+    result: dict[str, Any] = {}
+    for name, count_field, duration_field in (
+        ("decode_tokens_per_second", "output_tokens", "decode_ms"),
+        ("end_to_end_tokens_per_second", "output_tokens", "end_to_end_ms"),
+        ("measured_decode_tokens_per_second", "decode_tokens", "decode_ms"),
+    ):
+        pairs = [
+            (getattr(sample, count_field), sample.timings_ms[duration_field])
+            for sample in samples
+            if getattr(sample, count_field) is not None
+            and duration_field in sample.timings_ms
+        ]
+        duration_ms = sum(duration for _, duration in pairs)
+        result[name] = (
+            sum(count for count, _ in pairs) / (duration_ms / 1000.0)
+            if duration_ms > 0 else None
+        )
+        result[name + "_sample_count"] = len(pairs)
+    result["decode_rate_evidence_boundary"] = (
+        "decode_tokens_per_second is legacy output_tokens/decode_ms; "
+        "measured_decode_tokens_per_second requires explicit decode_tokens. "
+        "Rates use only count/duration pairs from the same completed request."
+    )
+    return result
 
 
 def _metadata_number(metadata: Mapping[str, Any] | None, key: str) -> float | None:

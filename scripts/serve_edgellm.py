@@ -43,6 +43,7 @@ def serve_prebuilt_engines(
     host: str,
     port: int,
     http_max_batch_size: int = 1,
+    stream_usage: bool = False,
     cuda_graph: str | None = None,
     pin_optimization_profiles: bool | None = None,
     profile_switch_timing: bool | None = None,
@@ -89,6 +90,12 @@ def serve_prebuilt_engines(
             "无法导入 experimental.server；请把固定 commit 的 "
             "TensorRT Edge-LLM checkout 加入 PYTHONPATH，并构建 Python bindings"
         ) from error
+
+    if stream_usage:
+        from experimental.server import api_server
+        from parksight_vlm.inference.edge_server_metrics import install_stream_usage
+
+        install_stream_usage(api_server)
 
     llm_root, visual_root = _resolve_engine_directories(
         engine_root=engine_root,
@@ -163,6 +170,7 @@ def build_runtime_metadata(
     runtime_tuning_config: Path | None = None,
     runtime_variant_id: str | None = None,
     patch_chain_verification: Mapping[str, Any] | None = None,
+    stream_usage: bool = False,
 ) -> dict[str, Any]:
     """构造一次服务启动的 engine 与 runtime 开关身份。"""
     metadata = {
@@ -175,6 +183,7 @@ def build_runtime_metadata(
         "edge_llm_root": str(edge_llm_root.resolve()) if edge_llm_root else None,
         "plugin_path": str(plugin_path.resolve()) if plugin_path else os.environ.get("EDGELLM_PLUGIN_PATH"),
         "options": {
+            "stream_usage": stream_usage,
             "cuda_graph": cuda_graph or "default",
             "pin_optimization_profiles": _option_state(pin_optimization_profiles),
             "profile_switch_timing": _option_state(profile_switch_timing),
@@ -229,6 +238,14 @@ def build_runtime_metadata(
     }
     if patch_chain_verification is not None:
         metadata["patch_chain_verification"] = dict(patch_chain_verification)
+    if stream_usage:
+        from parksight_vlm.inference import edge_server_metrics
+
+        metadata["stream_usage_extension"] = {
+            "source": _artifact_identity(Path(edge_server_metrics.__file__)),
+            "count_boundary": "Native StreamDelta.token_ids, including special token IDs",
+            "unknown_fields": ["prompt_tokens", "decode_tokens", "prefill_ms", "decode_ms"],
+        }
     return metadata
 
 
@@ -538,6 +555,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
+        "--stream-usage", action="store_true",
+        help="Emit terminal SSE completion usage counted from native stream token IDs",
+    )
+    parser.add_argument(
         "--http-max-batch-size",
         type=int,
         default=1,
@@ -775,6 +796,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_tuning_config=args.runtime_tuning_config,
                 runtime_variant_id=runtime_variant_id,
                 patch_chain_verification=patch_chain_verification,
+                stream_usage=args.stream_usage,
             ),
         )
     serve_prebuilt_engines(
@@ -783,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         http_max_batch_size=args.http_max_batch_size,
+        stream_usage=args.stream_usage,
         cuda_graph=args.cuda_graph,
         pin_optimization_profiles=args.pin_optimization_profiles,
         profile_switch_timing=args.profile_switch_timing,

@@ -123,6 +123,7 @@ def run_sample(
             "repetition": repetition,
             "status": "completed",
             "output_tokens": generation.output_tokens,
+            "decode_tokens": generation.decode_tokens,
             "timings_ms": timings,
         }
     except Exception as error:  # benchmark 需保留失败样本，不因单样本退出

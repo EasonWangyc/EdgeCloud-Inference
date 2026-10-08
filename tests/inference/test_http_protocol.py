@@ -61,6 +61,26 @@ class Response:
 
 
 class HttpProtocolTests(unittest.TestCase):
+    def test_server_error_finish_reason_rejects_even_valid_assessment_content(self):
+        text = json.dumps(ASSESSMENT)
+        responses = (
+            Response([
+                event({"choices": [{"delta": {"content": text}}]}),
+                event({"choices": [{"delta": {}, "finish_reason": "error"}]}),
+                b"data: [DONE]\n\n",
+            ]),
+            Response([json.dumps({"choices": [{
+                "message": {"content": text}, "finish_reason": "error",
+            }]}).encode()], stream=False),
+        )
+        for response in responses:
+            with self.subTest(stream=response.headers["Content-Type"]):
+                record = self.record(response)
+                self.assertFalse(record.succeeded)
+                self.assertIsNone(record.assessment)
+                self.assertIsNone(record.raw_output)
+                self.assertIn("server error", record.failure.message)
+
     def test_explicit_decode_count_is_preserved_without_inference_from_completion_usage(self):
         for count in (None, 4, True, -1, 1.5, 6):
             with self.subTest(count=count):
