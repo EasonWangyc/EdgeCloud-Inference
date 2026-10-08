@@ -221,7 +221,41 @@ FP16 内存排查已核验当前源码：TensorRT <10.7 的分支使用 mmap 整
 反序列化；已安装 10.3 头文件同时提供 `deserializeCudaEngine(IStreamReader&)`，
 并注明 weight streaming 下可降低 host 内存使用。源码与头文件证据分别为
 `ps20_progress_memory_source.json` 和 `tensorrt_legacy_reader_headers.json`。
-这是可验证的下一步优化方向，尚未修改、编译或证明能解决视觉加载 OOM。
+该读取方式已完成隔离构建与单图验证，结果见下节。
+
+## FP16 读取器实验
+
+2026-10-09 使用 `prepare_edgellm_legacy_reader.py` 为已核验的 `trtUtils.cpp`
+生成 SHA-256 绑定补丁。候选增加 `EDGELLM_LEGACY_STREAM_READER=1`，默认保留
+原 mmap 分支；实验仅覆盖已安装的 TensorRT 10.3。读取器直接写入 TensorRT
+提供的 host buffer，按 4 MiB 分段读取，对读过的文件页调用 advisory DONTNEED。
+这不修改 engine 文件，也不清理全局系统缓存。
+
+真实源码混用 LF/CRLF，补丁保留未修改文本和各段换行。链接命令对 Core 库
+使用 whole-archive，因此 `build_edgellm_legacy_reader.py` 复制静态库并仅替换
+副本中的 `trtUtils.cpp.o`，复用已验证的 timing binding 对象。构建记录核验
+archive 成员顺序、替换对象内容、链接映射及原始输入哈希；原 checkout、库和
+绑定未改动。脚本默认只生成计划，执行必须显式传入 `--execute`。
+
+候选 binding SHA-256 为
+`da86534af3e69d9cd83263af32be93899b02578565998e505d23e51bdea65694`。
+板端目录为 `artifacts/runtime/legacy-reader-20261009-retry1/`。以相同 FP16
+engine、冻结 indoor 001、15W 模式、weight streaming budget 0 做单图诊断；
+LLM 和视觉加载日志均确认启用了候选读取器。视觉 engine 仍在申请
+811032832 bytes 时 OOM，失败阶段为 `runtime_initialization`，零生成 token，
+因此没有 TTFT、decode 或吞吐结果，不能宣称优化成功或精度等价。
+
+日志记录 weight streaming scratch 1244660224 bytes、预分配 base execution
+context 1347639296 bytes。250 ms 进程采样共 210 条，采样中最大 VmRSS
+6500680 KiB、最大 VmHWM 6512536 KiB；这些不是逐请求 GPU 内存指标。
+下一步核对 context、权重和视觉资源的同时驻留及分配顺序；不能据本轮推断
+更换读取方式降低了多少峰值。本轮未开展配对的 mmap 内存采样比较。
+
+完整构建证据为 `reports/jetson-readiness-20261009/legacy_reader_build_record.json`，
+单图原始证据为 `legacy_reader_fp16_probe.json`，后者 SHA-256 为
+`b7a7701857744c623299e18f919e86a949257d27d529414b8c5c90a1e491f874`。
+诊断及资源采样进程均已退出；原 engine 元数据核验未变。以上文件位于被 Git
+忽略的 reports 目录，需与源码提交分别归档。
 
 1. 补齐完整 tokenizer 目录、源码补丁与二进制构建身份，核对 TensorRT 内部视觉
    预处理尺寸和布局，并将新增 Adapter 放入独立板端 checkout 进行验收。
