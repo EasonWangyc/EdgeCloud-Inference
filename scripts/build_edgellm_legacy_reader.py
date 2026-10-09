@@ -1,4 +1,4 @@
-"""Build a source-bound deserialization overlay without changing native archives."""
+"""Build a source-bound Core overlay without changing native archives."""
 
 from __future__ import annotations
 
@@ -17,7 +17,12 @@ except ModuleNotFoundError:
     from build_edgellm_timing_binding import build_plan, sha256
 
 
-def overlay_plan(root: Path, output: Path, binding_object: Path, expected_sha: str) -> dict:
+def overlay_plan(root: Path, output: Path, binding_object: Path, expected_sha: str,
+                 *, source_relative_path: str = "cpp/common/trtUtils.cpp",
+                 core_archive: Path | None = None, core_archive_sha256: str | None = None) -> dict:
+    if source_relative_path not in {"cpp/common/trtUtils.cpp", "cpp/runtime/llmInferenceRuntime.cpp"}:
+        raise ValueError("unsupported overlay source")
+    member_name = Path(source_relative_path).name + ".o"
     root, output, binding_object = root.resolve(), output.resolve(), binding_object.resolve()
     if sha256(binding_object) != expected_sha:
         raise ValueError("timing binding object SHA-256 changed")
@@ -37,32 +42,39 @@ def overlay_plan(root: Path, output: Path, binding_object: Path, expected_sha: s
     if len(archives) != 1:
         raise ValueError("expected exactly one Core archive")
     original_archive = (Path(plan["working_directory"]) / archives[0]).resolve()
+    if core_archive is not None:
+        if sha256(core_archive) != core_archive_sha256:
+            raise ValueError("candidate Core archive SHA-256 changed")
+        original_archive = core_archive.resolve()
+        plan["inputs"].append({"path": str(original_archive), "sha256": sha256(original_archive)})
     archive = output / "libcandidateCore.a"
     link[link.index(archives[0])] = str(archive)
     archive_link = root / "build/cpp/CMakeFiles/edgellmCore.dir/link.txt"
     archiver = shlex.split(archive_link.read_text().splitlines()[0])[0]
     members = subprocess.run([archiver, "t", str(original_archive)], check=True,
                              capture_output=True, text=True).stdout.splitlines()
-    if members.count("trtUtils.cpp.o") != 1:
-        raise ValueError("Core archive must contain one deserialization object")
+    if members.count(member_name) != 1:
+        raise ValueError("Core archive must contain one overlay target object")
     plan.update(original_archive=str(original_archive), candidate_archive=str(archive),
                 archiver=archiver, archive_members=members,
-                archive_command=[archiver, "r", str(archive), str(output / "trtUtils.cpp.o")])
+                member_name=member_name,
+                archive_command=[archiver, "r", str(archive), str(output / member_name)])
     link.append("-Wl,-Map=" + str(output / "link.map"))
     plan["compile_command"] = [link[0], *definitions["CXX_DEFINES"],
-                               *definitions["CXX_INCLUDES"], "-I" + str(root / "cpp/common"),
-                               *definitions["CXX_FLAGS"], "-c", str(output / "source/cpp/common/trtUtils.cpp"),
-                               "-o", str(output / "trtUtils.cpp.o")]
+                               *definitions["CXX_INCLUDES"], "-I" + str((root / source_relative_path).parent),
+                               *definitions["CXX_FLAGS"], "-c", str(output / "source" / source_relative_path),
+                               "-o", str(output / member_name)]
     for path in (binding_object, flags_path, archive_link, *sorted((root / "cpp").rglob("*.h"))):
         plan["inputs"].append({"path": str(path), "sha256": sha256(path)})
     return plan
 
 
-def verify_link_map(text: str) -> None:
-    if not re.search(r"libcandidateCore\.a\([^)]*trtUtils\.cpp\.o\)", text):
-        raise ValueError("link map does not contain the candidate deserialization object")
-    if re.search(r"libedgellmCore\.a\([^)]*trtUtils\.cpp\.o\)", text):
-        raise ValueError("original archive deserialization object was also selected")
+def verify_link_map(text: str, member_name: str = "trtUtils.cpp.o") -> None:
+    member = re.escape(member_name)
+    if not re.search(r"libcandidateCore\.a\([^)]*" + member + r"\)", text):
+        raise ValueError("link map does not contain the candidate overlay object")
+    if re.search(r"libedgellmCore\.a\([^)]*" + member + r"\)", text):
+        raise ValueError("original archive overlay object was also selected")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,18 +85,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--patch", type=Path, required=True)
     parser.add_argument("--patch-record", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
+    parser.add_argument("--core-archive", type=Path)
+    parser.add_argument("--core-archive-sha256")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     root, output = args.edge_llm_root.resolve(), args.output_directory.resolve()
     if output.exists() or output.is_relative_to(root):
         parser.error("output must be a fresh directory outside the native source checkout")
     record = json.loads(args.patch_record.read_text())
-    if record["source_relative_path"] != "cpp/common/trtUtils.cpp":
+    if record["source_relative_path"] not in {"cpp/common/trtUtils.cpp", "cpp/runtime/llmInferenceRuntime.cpp"}:
         parser.error("unexpected patch target")
+    if (args.core_archive is None) != (args.core_archive_sha256 is None):
+        parser.error("Core archive path and SHA-256 must be supplied together")
     source = root / record["source_relative_path"]
     if sha256(source) != record["source_sha256"] or sha256(args.patch) != record["patch_sha256"]:
         parser.error("source or patch identity changed since preparation")
-    plan = overlay_plan(root, output, args.binding_object, args.binding_object_sha256)
+    plan = overlay_plan(root, output, args.binding_object, args.binding_object_sha256,
+                        source_relative_path=record["source_relative_path"],
+                        core_archive=args.core_archive, core_archive_sha256=args.core_archive_sha256)
     if not args.execute:
         print(json.dumps({"status": "ready_for_explicit_execution", **plan}, indent=2))
         return 0
@@ -96,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     patch.write_bytes(args.patch.read_bytes())
     result = {"status": "running", "plan": plan, "patch_record": record,
               "script_sha256": sha256(Path(__file__)), "original_source_sha256": sha256(source),
-              "evidence_boundary": "One deserialization object plus existing timing binding; no GPU inference"}
+              "evidence_boundary": "One Core object overlay plus existing timing binding; no GPU inference"}
     destination = output / "build_record.json"
     started = time.perf_counter()
     try:
@@ -108,15 +126,15 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copyfile(plan["original_archive"], plan["candidate_archive"])
             for command in (plan["compile_command"], plan["archive_command"], plan["link_command"]):
                 subprocess.run(command, cwd=plan["working_directory"], stdout=log, stderr=log, check=True)
-        verify_link_map((output / "link.map").read_text())
+        verify_link_map((output / "link.map").read_text(), plan["member_name"])
         members = subprocess.run([plan["archiver"], "t", plan["candidate_archive"]], check=True,
                                  capture_output=True, text=True).stdout.splitlines()
         if members != plan["archive_members"]:
             raise ValueError("candidate archive members changed")
-        member = subprocess.run([plan["archiver"], "p", plan["candidate_archive"], "trtUtils.cpp.o"],
+        member = subprocess.run([plan["archiver"], "p", plan["candidate_archive"], plan["member_name"]],
                                 check=True, capture_output=True).stdout
-        if member != (output / "trtUtils.cpp.o").read_bytes():
-            raise ValueError("candidate archive contains a different deserialization object")
+        if member != (output / plan["member_name"]).read_bytes():
+            raise ValueError("candidate archive contains a different overlay object")
         changed = [entry["path"] for entry in plan["inputs"]
                    if sha256(Path(entry["path"])) != entry["sha256"]]
         if sha256(source) != record["source_sha256"] or changed:

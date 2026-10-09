@@ -104,6 +104,18 @@ class LegacyReaderTests(unittest.TestCase):
             self.assertIn("-Wl,--whole-archive", plan["link_command"])
             self.assertEqual(plan["archive_members"], ["trtUtils.cpp.o"])
             self.assertEqual(archive.read_bytes(), before)
+            runtime_member = root / "llmInferenceRuntime.cpp.o"
+            runtime_member.write_bytes(b"original runtime")
+            subprocess.run([shutil.which("ar"), "r", str(archive), str(runtime_member)], check=True)
+            archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            kwargs = dict(source_relative_path="cpp/runtime/llmInferenceRuntime.cpp",
+                          core_archive=archive, core_archive_sha256=archive_sha)
+            plan = overlay_plan(root, output, binding, hashlib.sha256(binding.read_bytes()).hexdigest(), **kwargs)
+            self.assertEqual(plan["member_name"], "llmInferenceRuntime.cpp.o")
+            self.assertIn(str(output / "source/cpp/runtime/llmInferenceRuntime.cpp"), plan["compile_command"])
+            kwargs["core_archive_sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "Core archive SHA-256"):
+                overlay_plan(root, output, binding, hashlib.sha256(binding.read_bytes()).hexdigest(), **kwargs)
 
     @unittest.skipUnless(shutil.which("g++"), "reader I/O test requires a host C++ compiler")
     def test_host_reader_handles_multichunk_eof_invalid_requests_and_preserves_input(self):

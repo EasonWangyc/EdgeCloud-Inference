@@ -257,6 +257,57 @@ context 1347639296 bytes。250 ms 进程采样共 210 条，采样中最大 VmRS
 诊断及资源采样进程均已退出；原 engine 元数据核验未变。以上文件位于被 Git
 忽略的 reports 目录，需与源码提交分别归档。
 
+## Context 分配顺序与预算研究
+
+`prepare_edgellm_context_allocation.py` 为当前 `llmInferenceRuntime.cpp` 生成
+源码哈希绑定补丁。`EDGELLM_DEFER_CONTEXT_ALLOCATION=1` 将共享 context 的分配
+延后到可选视觉 runner 加载之后；未设置或设为 0 时保留原分配顺序。候选拒绝
+draft 模型，未验证 speculative decoding。后置分配仍使用各 runner 需求的
+最大值，不能缩小 buffer 来规避 OOM。
+
+Core overlay 构建脚本可对已核验的候选 archive 再覆盖单个 runtime 对象，
+参数 `--core-archive` 与 `--core-archive-sha256` 必须同时提供。原库、候选输入
+和 checkout 均只读，输出必须位于新目录。本轮 binding SHA-256 为
+`2859d58b4518b4b7d050c7eb901f50ddabb39eeca5b7790124f3c6345d66c7a7`。
+两个单图实验使用相同 FP16 engine、workload、indoor 001 和 15W 模式：
+
+| Context 分配 | Weight budget | 实测结果 |
+| --- | --- | --- |
+| 延后 | 0 | 视觉 runner 初始化成功；申请 1347639296 bytes 共享 context 时 CUDA OOM |
+| 延后 | 640 MiB | scratch 未减少；视觉反序列化再次在 811032832 bytes 分配处 OOM |
+
+两次均失败于 `runtime_initialization`，零生成 token，无 TTFT 和吞吐结果；
+原 engine 元数据未变，诊断和采样进程已退出。分配顺序改变了失败位置，
+尚未证明完整模型可驻留或生成，因此不启用候选作为默认。
+
+已安装 10.3 头文件说明 scratch 可通过 `getDeviceMemorySizeV2()` 与
+`setDeviceMemoryV2()` 提供；当前 executor 已使用这对接口。scratch 是全局
+context 需求的一部分，不能重复相加；通用接口说明见 NVIDIA
+[weight streaming 文档](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/weight-streaming.html)。
+
+使用系统现有 TensorRT Python 10.3 独立查询同一 LLM engine，未创建用户执行
+context 或运行模型。0/640/1280/1920/2560/3200 MiB 六个预算均核验
+requested=actual，scratch 均为 1244660224 bytes，全局 context 均为
+1347639296 bytes（约 1.26 GiB）。本版本两个 per-profile API 值为
+102979072/78145536 bytes，未覆盖该 scratch，不能替代全局 buffer 需求。
+预算 setter 本身可能分配 GPU 权重；查询不是完整模型 fit 或性能证据。
+
+首轮查询尝试全量预算 3441150208 bytes 时 TensorRT 报 OOM，Python setter
+却未抛异常，actual 仍是此前的 3355443200。首轮输出的 `queried` 不代表最后
+预算生效。`inspect_edgellm_weight_streaming.py` 已增加 `budget_applied`、
+requested/actual 核验和失败前的部分结果保存；存在拒绝时输出
+`queried_with_rejected_budgets` 并返回 2。修正后的六预算查询全部通过。
+
+完整构建、两个单图结果及预算查询分别保存在
+`reports/jetson-readiness-20261009/context_build_record.json`、
+`context_fp16_probe.json`、`context_fp16_budget640_probe.json` 和
+`weight_budget_query_verified.json`；首轮原始拒绝证据单独保存在
+`weight_budget_query_initial.json`。板端目录为
+`artifacts/runtime/deferred-context-20261009/` 和
+`artifacts/runtime/weight-budget-query-20261009-verified/`。
+下一步核对既有 FP16 ONNX 与构建身份，研究非流式 FP16 候选；当前六个
+流式预算没有提供减少 scratch 的证据，继续扩大预算不作为默认优化方向。
+
 1. 补齐完整 tokenizer 目录、源码补丁与二进制构建身份，核对 TensorRT 内部视觉
    预处理尺寸和布局，并将新增 Adapter 放入独立板端 checkout 进行验收。
 2. 核对构建日志、命令和源码补丁。旧 flow record 仅记录输出存在和成功状态，
