@@ -191,8 +191,8 @@ prefill/generation；001 的 HTTP TTFT 为 10681.44 ms，包含前一请求排�
 `artifacts/runtime/http-stage-guard-20261009/` 重跑相同双请求验收；两个计数窗口
 再次通过完整性、非交叠和首尾连续核验。最新代码身份与全部原始证据见
 `reports/jetson-readiness-20261009/http_stage_guard_diagnostic.json`。取消 HTTP 响应
-且 native worker 仍在执行的场景由无硬件测试验证后续请求返回 503；本轮未执行
-真实 GPU 断流测试，不能把正常完成请求的证据用于该分支。
+且 native worker 仍在执行的场景先由无硬件测试验证后续请求返回 503；
+2026-10-11 的真实 GPU 断流结果见下节。
 
 ## 冻结 PS20 完整验收
 
@@ -320,3 +320,70 @@ requested/actual 核验和失败前的部分结果保存；存在拒绝时输出
 和 `fp16_snapshot.json`，后续文件身份与跨主机比较见 `file_identity.json`、
 `parity_audit.json`、`model_environment.json` 和 `model_parity.json`。
 `reports/` 被 Git 忽略，原始证据需单独归档。
+
+## 真实断流与贪心参数复验（2026-10-11）
+
+在隔离 INT4 服务收到首个可见 token 后关闭 TCP 连接；取消发生在请求开始后
+664.38 ms。随后请求返回 503，等待 35 秒后再次请求仍为 503，明确要求重启
+测量服务。这验证了该次 native worker 尚未停止时的持续拒绝行为，避免串行
+阶段计数混入后续请求；不能推广为所有取消时机均已覆盖。取消请求不计为有效
+推理记录。证据：`reports/jetson-readiness-20261011/http_cancel_evidence.json`，
+SHA-256 `a04f37e2bfab829862106dd314b19cba00271f4d7d2d478e0e7247b5bfc7443f`。
+
+原 HTTP 请求只指定 temperature=0，native 每个生成步骤都会将默认 top_k/top_p
+归一化并输出告警。Adapter 与 native probe 现在显式发送 temperature=0、
+top_k=1、top_p=1.0；do_sample=true 保留原采样行为。相同单图 A/B/A 三次请求
+各输出 95 tokens，原始文本相同，阶段计数窗口连续；显式请求告警为零，隐式
+请求各 95 条。此实验支持参数行为一致与日志消除，不构成稳定加速结论。
+完整证据：`reports/jetson-readiness-20261011/http_greedy_evidence.json`，
+SHA-256 `6aad60efc362bf7c90e577b84577771a2676b92bc9202b856f11528c00ad41af`。
+
+## FP16 非流式构建的系统内存限制
+
+2026-10-11 复用现有 FP16 ONNX，在新目录
+`artifacts/runtime/fp16-nonstream-build-20261011/` 关闭 weight streaming，设置
+batch=1、input=768、KV=1024、workspace=512 MiB、builder optimization level=0。
+构建约 56 秒后 SIGKILL，未生成 engine，输入文件哈希未变。内核日志明确记录
+PID 216353（llm_build）被 global OOM killer 杀死；进程采样最高 VmRSS
+5812328 KiB、最低 MemAvailable 21180 KiB，SwapFree 降为零。
+这是构建阶段的系统 OOM，不是候选 engine 的运行时适配或显存结论。
+
+原始证据保存在 `reports/jetson-readiness-20261011/` 的
+`fp16_nonstream_build_evidence.json`、`fp16_nonstream_kernel_audit.json` 与
+`fp16_nonstream_failure_summary.json`。构建脚本分别记录进程信号、非零退出
+和启动失败；仅凭 SIGKILL 不自动宣称 OOM，需另附内核证据。
+
+已准备 mode=0600 的 8 GiB 临时构建 swap 文件，未写入 fstab；准备时未启用。
+`sudo -n` 需要用户密码，因此启用步骤由用户在 Jetson Bash 执行：
+
+```bash
+sudo swapon -p 0 /home/ubuntu/JetsonVLM/artifacts/runtime/fp16-nonstream-build-20261011/swap/build.swap
+cat /proc/swaps
+```
+
+启用后再核验状态并使用新目录构建；不能将交换空间增加等同于 CUDA 可用内存
+增加。运行时评测需记录实际 swap 状态；构建完成后使用同一路径执行
+`sudo swapoff`，确认不再活跃后再删除临时文件。准备证据为
+`reports/jetson-readiness-20261011/build_swap_preparation.json`。
+
+## 显式贪心参数的 PS20 验收（2026-10-12）
+
+新配置 `configs/studies/jetson_edgellm_int4_explicit_greedy_ps20_pilot.json`
+在隔离目录 `artifacts/runtime/ps20-explicit-greedy-20261012/` 完成 20/20 执行
+与严格 JSON 校验，三个阶段各 20 条，失败为空。阶段窗口连续，native 计数、
+SSE usage 和报告一致；输入/输出/decode 总数仍为 11400/1550/1530。全服务日志
+的贪心归一化告警为零。逐样本与 2026-10-09 PS20 比较，20 条原始文本、
+assessment、token 数和 workload identity 全部一致。
+
+HTTP TTFT p50 567.40 ms，含预处理的客户端 TTFT p50 769.96 ms；E2E
+p50/p90/p99 为 10.488/11.340/12.750 秒，墙钟输出吞吐 7.338 tokens/s，
+严格 decode 7.825 tokens/s。跨天结果接近，不据此宣称性能提升。风险等级准确率
+仍为 0.35、事件 micro-F1 为 0、语义一致率为 0.10；框架有效不代表业务效果合格。
+
+本轮仍为串行、已加载服务、native profiling 与 SSE 持久化开启、无独立预热的
+pilot；不是无插桩基线或 native 并行吞吐。前后只有六个 zram swap，临时磁盘
+swap 未启用；测量服务已退出，端口 18080 无监听，图片与原 engine 元数据未变。
+模型 revision 仍缺历史导出绑定。完整证据为
+`reports/jetson-readiness-20261012/ps20_greedy_study.json`，SHA-256
+`bdb3cdf0d8adbfa964c11fb2666c80ecc8f1957fdc3afc9fa7b396e879c0c866`；
+同目录 `ps20_greedy_comparison.json` 保存逐样本比较和全部指标。

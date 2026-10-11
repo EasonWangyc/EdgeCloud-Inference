@@ -133,7 +133,10 @@ def main(argv: list[str] | None = None) -> int:
         known_threads = {thread.ident for thread in threading.enumerate()}
         started = time.perf_counter()
         stream = api_server._generate_stream_sse(
-            llm, messages, SamplingParams(temperature=0.0, max_tokens=workload.generation.max_new_tokens),
+            llm, messages, SamplingParams(
+                temperature=0.0, top_k=1, top_p=1.0,
+                max_tokens=workload.generation.max_new_tokens,
+            ),
             "parksight-native-probe", False)
         def captured():
             for event in stream:

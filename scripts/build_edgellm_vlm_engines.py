@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Mapping
@@ -487,12 +488,28 @@ def _run_build_step(
     started_clock = time.perf_counter()
     try:
         subprocess.run(command, check=True, env=environment)
-    except subprocess.CalledProcessError as error:
+    except (subprocess.CalledProcessError, OSError) as error:
+        returncode = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        signal_number = -returncode if returncode is not None and returncode < 0 else None
+        try:
+            signal_name = signal.Signals(signal_number).name if signal_number is not None else None
+        except ValueError:
+            signal_name = "UNKNOWN"
         report["steps"].append(
             {
                 "component": component,
                 "status": "failed",
-                "returncode": error.returncode,
+                "returncode": returncode,
+                "failure_category": (
+                    "process_signal" if signal_number is not None
+                    else "launch_error" if isinstance(error, OSError)
+                    else "builder_nonzero_exit"
+                ),
+                "termination_signal_number": signal_number,
+                "termination_signal": signal_name,
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "oom_confirmed": None,
                 "started_at_utc": started_at.isoformat(),
                 "duration_ms": (time.perf_counter() - started_clock) * 1000.0,
             }

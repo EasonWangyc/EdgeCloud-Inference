@@ -540,6 +540,10 @@ class EdgeLlmHttpBackend(OpenAICompatibleHttpBackend):
         }
         if not workload.generation.do_sample:
             payload["temperature"] = 0.0
+            # Native greedy decoding normalizes these values on every step.
+            # Send the effective values once to avoid repeated warning/log I/O.
+            payload["top_k"] = 1
+            payload["top_p"] = 1.0
         if stream is not None:
             payload["stream"] = stream
         return payload

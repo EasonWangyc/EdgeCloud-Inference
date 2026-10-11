@@ -595,3 +595,24 @@ sidecar、配置前后快照、日志、`server_profiles.json`、
 返回 2，即使推理本身成功。后续 GPU CSV 同时采集 SM/显存时钟与功耗、
 温度及降频原因；字段已在本机驱动核对。旧 CSV 不补填新字段，采样仍为
 设备级每秒一次；未受控功耗、系统负载和热状态不能由这些字段自动消除。
+
+## Jetson INT4 显式贪心参数复验（2026-10-12）
+
+Edge HTTP Adapter 显式发送 temperature=0、top_k=1、top_p=1.0，避免 native
+逐 token 重复归一化和告警。冻结 PS20 完成 20/20 后端与严格 JSON 校验，
+告警为零；与 2026-10-09 的 20 条原始输出和 token 数逐条一致。
+
+| 指标 | 本轮结果 |
+| --- | --- |
+| HTTP TTFT p50 | 567.40 ms |
+| 客户端总 TTFT p50（含预处理） | 769.96 ms |
+| E2E p50 / p90 / p99 | 10.488 / 11.340 / 12.750 s |
+| 墙钟输出吞吐 | 7.338 tokens/s |
+| 严格 decode 吞吐 | 7.825 tokens/s |
+| input / output / decode tokens | 11400 / 1550 / 1530 |
+
+本轮为 15W、串行、已加载服务、native profiling 与 SSE 持久化开启的 pilot，
+没有独立预热。跨天结果接近，不作为稳定加速结论。质量指标仍为风险等级准确率
+0.35、事件 micro-F1 0、语义一致率 0.10；此次改动只验证框架行为。
+模型 revision 与历史导出尚未绑定，不与服务器 vLLM 数据计算板端加速比。
+完整配置、证据路径、哈希与比较范围见 [Jetson 验收记录](jetson-readiness.md)。
