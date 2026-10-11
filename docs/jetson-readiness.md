@@ -434,3 +434,49 @@ GPU 内存或能耗；前后都没有启用磁盘 swap。性能差异很小，�
 
 风险等级准确率仍为 0.35、事件 micro-F1 为 0；本轮只关闭框架测量差异的
 验证缺口，业务效果、FP16 内存限制及历史导出 revision 绑定仍需继续处理。
+
+## Decode CUDA Graph 捕获对照（2026-10-12）
+
+当前 Python server 在加载 runtime 后默认调用 Graph 捕获，原源码没有
+`EDGELLM_DISABLE_CUDA_GRAPH` 分支。`prepare_edgellm_cuda_graph.py` 以源码
+SHA-256 绑定生成 Python 补丁：只有环境变量为 1 时跳过捕获，默认行为不变。
+实验将 10 个 experimental Python 文件复制到独立目录，仅修改副本 engine.py，
+并核验进程实际加载路径及哈希。native binding、Core、插件与 engine 均未重建；
+原 checkout 的 Python 文件和 engine 元数据前后哈希未变。
+
+固定原 engine.py SHA-256 为
+`5a7d77fbc97e1a18c8dd44b7c922bfbf300e708e2cb957f0471ee50585d1fc43`，
+候选为 `a1bcc2296e51ed8ccade20d16698ff66190c0833fc5c61ddebb34d04ab2e00a7`。
+关闭与重开使用同一候选源码、同一 6dae timing binding；功耗模式仍为 15W。
+关闭档 metadata 确认环境开关为 1，原生捕获日志为零；重开档环境开关移除，
+捕获日志为一条。Python INFO 关闭提示被当前 logger 过滤，不能要求它已出现。
+状态判断结合实际加载源码、运行环境和原生日志；捕获证据尚不是 replay 的
+直接 CUDA trace。
+
+| Graph 捕获 | HTTP TTFT p50（ms） | decode p50（s） | E2E p50（s） | 墙钟输出吞吐（tokens/s） |
+| --- | --- | --- | --- | --- |
+| 开启前测 | 565.96 | 9.712 | 10.486 | 7.3361 |
+| 关闭 | 567.70 | 9.877 | 10.658 | 7.2096 |
+| 开启复验 | 566.53 | 9.707 | 10.483 | 7.3383 |
+
+三档各 20/20 执行与严格 JSON 校验通过，三阶段各 20 条且计数窗口连续。
+关闭和重开各 20 条原始输出、assessment、input/output/decode 数均与前测一致，
+总数为 11400/1550/1530。严格 decode 吞吐分别为 7.823/7.678/7.826 tokens/s。
+本轮开启组墙钟吞吐比关闭组约高 1.8%，保留默认启用；20 张 pilot、无独立预热、
+native profiling 与 SSE 持久化开启、未固定 GPU 时钟和温度，不推广为其他
+工作负载的稳定加速幅度。质量指标仍为风险等级准确率 0.35、事件 micro-F1 0。
+
+板端关闭与重开目录为 `artifacts/runtime/ps20-graph-disabled-20261012/` 和
+`ps20-graph-enabled-recheck-20261012/`，两服务已退出且 18080 无监听。完整
+本地证据在 `reports/jetson-readiness-20261012/`：
+
+- `ps20_graph_disabled_study.json`：SHA-256
+  `825a59de23d4ae9f0be975c779e6cd8019c023618f79669ad1b0770ae0595516`。
+- `ps20_graph_enabled_recheck_study.json`：SHA-256
+  `fa43c4f109c65a8c2f3ce00d6bf6a18957c9c0b9f2add3b159bb385747ed10db`。
+- `graph_python_source_audit.json` 保存全部原始/副本 Python 内容与哈希，SHA-256
+  `754194585e48ec4850717b1beab5c867a4419e738719a32dffb5b23c751fc4f3`。
+- `graph_comparison.json` 保存逐样本比较、性能、启动时间及设备遥测。
+
+下一步使用已安装的 Nsight Systems 2024.5.4.34 追踪实际 Graph replay、CUDA
+同步与 decode kernel。尚未执行该 trace；不能仅凭总耗时指定具体 kernel 瓶颈。

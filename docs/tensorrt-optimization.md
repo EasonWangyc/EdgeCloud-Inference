@@ -499,20 +499,20 @@ sampling kernel 时间、TTFT/decode/E2E 和 soak 结果决定是否保留。
 统一设置。只有应用该 patch 后，`enabled/disabled` 才构成有效的 CUDA Graph A/B；
 未应用 patch 时，命令行的 `disabled` 只能算未验证，不能把启动成功当作 Graph 已关闭。
 
-板端应用 patch 并启动关闭 Graph 的候选服务：
+板端使用已应用开关的隔离 Python 副本启动候选服务（准备方式见文末）：
 
 ```bash
-git -C /home/ubuntu/TensorRT-Edge-LLM apply \
-  /home/ubuntu/JetsonVLM/patches/tensorrt-edge-llm/0011-configurable-cuda-graph.patch
+PYTHONPATH=artifacts/runtime/graph-switch/python_overlay:src:/home/ubuntu/TensorRT-Edge-LLM \
 .venv-jetson/bin/python scripts/serve_edgellm.py \
   --engine-root artifacts/engines/qwen3_vl_2b_int4_awq_i768_k1024_opt1 \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --cuda-graph disabled
 ```
 
-关闭 Graph 的日志必须出现 `CUDA graph capture disabled by
-EDGELLM_DISABLE_CUDA_GRAPH=1.`，且不能把 `Successfully captured decoding CUDA graphs`
-作为该次运行的证据。启用组显式使用 `--cuda-graph enabled`，两组应分别保存 runtime
+Python INFO 可用时，关闭提示应出现 `CUDA graph capture disabled by
+EDGELLM_DISABLE_CUDA_GRAPH=1.`；INFO 被过滤时，联合核验实际加载副本哈希、
+开关环境和原生捕获日志，不能只凭一条日志缺失判定关闭。关闭组不得出现
+`Successfully captured decoding CUDA graphs`。启用组显式使用 `--cuda-graph enabled`，两组应分别保存 runtime
 日志并通过本节汇总脚本比较。汇总结果中的 `replay_observed` 只有在日志出现明确的
 CUDA Graph replay/launch 标记时才为 true；当前历史日志尚未观测到该标记，因此不能
 仅凭 capture 成功宣称 decode 已稳定复用 Graph。Graph 是否真正改善 kernel launch
@@ -1521,3 +1521,26 @@ non-Graph 的下降低于测量与晋级门槛，且没有在 CUDA Graph 路径�
 质量、内存或 soak。下一步应停止编译器提示级微调，转向减少反量化/中间访存的融合 GEMV，
 或围绕大词表 `lm_head` GEMM 做专用 tactic/算子归因。完整证据见
 `reports/jetson-tensorrt-revalidation/int4_gemv_restrict_pointers_ab_20260909.json`。
+
+## WSL 迁移后 Graph 开关的隔离验证
+
+当前 Jetson `experimental/server/engine.py` 的 Graph 捕获入口已移动，提供
+`scripts/prepare_edgellm_cuda_graph.py` 按实际源码 SHA-256 生成补丁，拒绝来源
+变化、重复开关和不支持的布局，并保留未修改内容及换行。默认仍捕获 Graph。
+实验应复制 experimental Python 包到新目录、只修改副本，并将该目录置于
+PYTHONPATH 首位；实际导入路径和哈希必须与副本一致。不要直接改原 checkout。
+
+准备命令示例（Jetson Bash，输出使用新路径）：
+
+```bash
+python3 scripts/prepare_edgellm_cuda_graph.py \
+  --source /home/ubuntu/TensorRT-Edge-LLM/experimental/server/engine.py \
+  --source-sha256 5a7d77fbc97e1a18c8dd44b7c922bfbf300e708e2cb957f0471ee50585d1fc43 \
+  --output /tmp/edgellm-graph-switch.patch
+```
+
+命令只生成补丁及身份记录，尚未应用或执行 GPU 推理。2026-10-12 已在独立
+Python 副本完成冻结 PS20 开启/关闭/开启验收；INFO 提示被 logger 过滤，改用
+实际导入源码、运行环境和原生捕获日志联合判定。输出完全一致，保留默认开启；
+详细指标与证据见 [Jetson 验收记录](jetson-readiness.md)。捕获日志不单独证明
+Graph replay，后续以 Nsight CUDA trace 核验。

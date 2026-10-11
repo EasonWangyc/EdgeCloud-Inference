@@ -642,3 +642,16 @@ CUDA timer 未增长；阶段耗时和 input/decode 计数为空。此结果只�
 profiling，不表示完全无插桩。新服务进程到健康检查成功的复验值为 10.078 s，
 不等同于系统冷启动。证据、设备遥测、旧摘要文字与零值修正的说明见
 [验收记录](jetson-readiness.md)。
+
+## Jetson Decode Graph 捕获开关复验
+
+2026-10-12 固定 INT4 engine、工作负载和 15W 模式，Graph 捕获开启 / 关闭 /
+开启各 20 条成功，所有输出与 token 数一致。墙钟吞吐为
+7.3361 / 7.2096 / 7.3383 tokens/s，decode p50 为 9.712 / 9.877 / 9.707 s。
+本轮开启组约快 1.8%，保留默认捕获；不作为跨模型、固定时钟或长时间 soak
+结论。阶段 profiling、SSE 记录仍开启，无独立预热。
+
+关闭开关通过源码哈希绑定补丁应用于独立 Python 副本；runtime metadata、
+真实导入路径和 native 捕获日志共同核验。INFO 关闭提示未输出，完整来源及
+原始证据见 [Jetson 验收记录](jetson-readiness.md)。Graph 捕获不等同于直接
+观测 replay，后续需 CUDA trace 定位实际 decode 路径。
