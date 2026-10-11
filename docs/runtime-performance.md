@@ -655,3 +655,17 @@ profiling，不表示完全无插桩。新服务进程到健康检查成功的�
 真实导入路径和 native 捕获日志共同核验。INFO 关闭提示未输出，完整来源及
 原始证据见 [Jetson 验收记录](jetson-readiness.md)。Graph 捕获不等同于直接
 观测 replay，后续需 CUDA trace 定位实际 decode 路径。
+
+## Nsight GPU / API 归因口径
+
+Nsight CSV 汇总使用 `parksight_cuda_kernel_names_v2`，新增 FP16 GEMM 分类及
+Edge-LLM INT4 WoQ GEMV 符号识别，避免 GEMV 被漏入 other_kernel。报告记录
+分类版本和执行脚本哈希；新旧分类不能直接比较，须用同版本重算两份原始 CSV。
+API trace 不能当作 GPU trace 输入，NaN/Inf duration 被拒绝。
+
+2026-10-12 单图显式 capture range 中直接观测 94 次 Graph launch 和
+42488 条关联 kernel 事件，与 native 94 次 decode stage 对应。一个 FP16
+GEMM 占全部 kernel event 时长的 83.55%，优先定位其模型算子与 tactic。
+事件时长之和不等于 wall time；同步 API 的 host 等待与 GPU 工作重叠，不能
+重复计时。单图、有 Nsight 开销的诊断不替代冻结 PS20 性能结论，详细证据见
+[Jetson 验收记录](jetson-readiness.md)。

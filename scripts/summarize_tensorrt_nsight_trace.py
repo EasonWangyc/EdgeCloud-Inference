@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ _NAME_FIELD = "Name"
 _TRANSFER_CATEGORIES = {"memcpy", "memset"}
 _CATEGORY_ORDER = (
     "int4_w4a16",
+    "fp16_gemm",
     "attention_fmha",
     "attention_xqa",
     "sampling",
@@ -34,6 +36,8 @@ def summarize_trace(path: Path | str, *, label: str | None = None) -> dict[str, 
         with trace_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             fields = set(reader.fieldnames or ())
+            if {"Result", "Pid", "Tid"}.issubset(fields):
+                raise ValueError("CUDA API trace is not a GPU event trace")
             missing = {_DURATION_FIELD, _NAME_FIELD} - fields
             if missing:
                 raise ValueError(
@@ -55,6 +59,8 @@ def summarize_trace(path: Path | str, *, label: str | None = None) -> dict[str, 
             raise ValueError(
                 f"invalid Nsight duration at row {row_number}: {raw_duration!r}"
             ) from error
+        if not math.isfinite(duration_ns):
+            raise ValueError(f"non-finite Nsight duration at row {row_number}")
         if duration_ns < 0:
             raise ValueError(f"negative Nsight duration at row {row_number}")
         events.append(
@@ -92,6 +98,8 @@ def summarize_trace(path: Path | str, *, label: str | None = None) -> dict[str, 
 
     return {
         "schema_version": "parksight_tensorrt_nsight_trace_summary_v1",
+        "classification_version": "parksight_cuda_kernel_names_v2",
+        "summarizer_sha256": sha256_file(Path(__file__)),
         "input": {
             "path": str(trace_path),
             "sha256": sha256_file(trace_path),
@@ -128,8 +136,11 @@ def classify_kernel(name: str) -> str:
         return "memcpy"
     if "memset" in lowered:
         return "memset"
-    if "w4a16" in lowered or "w4a16" in lowered.replace(" ", ""):
+    if ("w4a16" in lowered or "w4a16" in lowered.replace(" ", "")
+            or "trt_edgellm::kernel::gemv_kernel<" in lowered):
         return "int4_w4a16"
+    if "gemm_f16f16" in lowered:
+        return "fp16_gemm"
     if "fmha" in lowered or "flash_attention" in lowered:
         return "attention_fmha"
     if "xqa" in lowered:

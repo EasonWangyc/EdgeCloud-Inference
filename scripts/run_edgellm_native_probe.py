@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import hashlib
 import json
 import shutil
@@ -12,6 +14,36 @@ import time
 from pathlib import Path
 
 from parksight_vlm.inference.edge_native import construct_with_binding
+
+
+@contextmanager
+def cuda_profiler_range(enabled: bool) -> Iterator[None]:
+    """Bound an explicit Nsight capture to generation, excluding initialization."""
+    if not enabled:
+        yield
+        return
+    import ctypes
+
+    cuda = ctypes.CDLL("libcudart.so.12")
+    for name in ("cudaDeviceSynchronize", "cudaProfilerStart", "cudaProfilerStop"):
+        function = getattr(cuda, name)
+        function.argtypes = []
+        function.restype = ctypes.c_int
+
+    def checked(name: str) -> None:
+        code = getattr(cuda, name)()
+        if code != 0:
+            raise RuntimeError(f"{name} failed with CUDA error {code}")
+
+    checked("cudaDeviceSynchronize")
+    checked("cudaProfilerStart")
+    try:
+        yield
+    finally:
+        try:
+            checked("cudaDeviceSynchronize")
+        finally:
+            checked("cudaProfilerStop")
 
 
 def digest(path: Path) -> str:
@@ -56,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--workload", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
+    parser.add_argument("--cuda-profiler-range", action="store_true",
+                        help="Explicit cudaProfilerStart/Stop around generation for Nsight capture")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     output = args.output_directory.resolve()
@@ -70,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     output.mkdir(parents=True)
     result = {"status": "running", "scope": "Single native SSE diagnostic with profiling; no HTTP transport or baseline claim",
+              "cuda_profiler_range": args.cuda_profiler_range,
               "workload_sha256": digest(args.workload), "image_sha256": digest(args.image),
               "script_sha256": digest(Path(__file__)), "events": []}
     destination = output / "probe.json"
@@ -142,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
             for event in stream:
                 result["events"].append(event)
                 yield event.encode()
-        payload, ttft, _, arrivals = OpenAICompatibleHttpBackend.read_stream_response(captured(), request_start=started)
+        with cuda_profiler_range(args.cuda_profiler_range):
+            payload, ttft, _, arrivals = OpenAICompatibleHttpBackend.read_stream_response(captured(), request_start=started)
         result["native_stream_total_ms"] = (time.perf_counter() - started) * 1000
         if any(thread.ident not in known_threads and thread.is_alive() for thread in threading.enumerate()):
             raise RuntimeError("new worker still alive; refusing global Timer read")

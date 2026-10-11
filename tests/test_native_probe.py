@@ -2,13 +2,51 @@
 
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from pathlib import Path
 
-from scripts.run_edgellm_native_probe import construct_with_binding, digest, isolated_engine_view
+from scripts.run_edgellm_native_probe import (
+    construct_with_binding, cuda_profiler_range, digest, isolated_engine_view,
+)
 
 
 class NativeProbeTests(unittest.TestCase):
+    def test_profiler_is_opt_in_and_stops_after_generation_failure(self):
+        with patch("ctypes.CDLL") as loader:
+            with cuda_profiler_range(False):
+                pass
+            loader.assert_not_called()
+        cuda = Mock()
+        calls = []
+        for name in ("cudaDeviceSynchronize", "cudaProfilerStart", "cudaProfilerStop"):
+            getattr(cuda, name).side_effect = lambda name=name: calls.append(name) or 0
+        with patch("ctypes.CDLL", return_value=cuda):
+            with self.assertRaisesRegex(ValueError, "generation failed"):
+                with cuda_profiler_range(True):
+                    calls.append("generation")
+                    raise ValueError("generation failed")
+        self.assertEqual(calls, ["cudaDeviceSynchronize", "cudaProfilerStart", "generation",
+                                 "cudaDeviceSynchronize", "cudaProfilerStop"])
+
+    def test_profiler_start_failure_and_cleanup_sync_failure_are_not_success(self):
+        cuda = Mock()
+        cuda.cudaDeviceSynchronize.return_value = 0
+        cuda.cudaProfilerStart.return_value = 1
+        cuda.cudaProfilerStop.return_value = 0
+        with patch("ctypes.CDLL", return_value=cuda):
+            with self.assertRaisesRegex(RuntimeError, "cudaProfilerStart"):
+                with cuda_profiler_range(True):
+                    self.fail("generation must not start")
+        cuda.cudaProfilerStop.assert_not_called()
+        cuda.cudaProfilerStart.return_value = 0
+        cuda.cudaDeviceSynchronize.side_effect = [0, 700]
+        with patch("ctypes.CDLL", return_value=cuda):
+            with self.assertRaisesRegex(RuntimeError, "cudaDeviceSynchronize"):
+                with cuda_profiler_range(True):
+                    pass
+        cuda.cudaProfilerStop.assert_called_once()
+
     def test_binding_selection_reuses_module_and_restores_loader_after_success_or_failure(self):
         for fail in (False, True):
             with self.subTest(fail=fail):

@@ -480,3 +480,52 @@ native profiling 与 SSE 持久化开启、未固定 GPU 时钟和温度，不�
 
 下一步使用已安装的 Nsight Systems 2024.5.4.34 追踪实际 Graph replay、CUDA
 同步与 decode kernel。尚未执行该 trace；不能仅凭总耗时指定具体 kernel 瓶颈。
+
+## 单图 Nsight generation trace（2026-10-12）
+
+在新目录 `artifacts/runtime/nsight-native-generation-20261012/` 使用已安装
+Nsight Systems 2024.5.4.34，CUDA node trace、无 CPU sampling/context switch。
+`run_edgellm_native_probe.py --cuda-profiler-range` 在生成前后显式调用
+cudaProfilerStart/Stop，并同步 GPU 边界；初始化、Graph 捕获与客户端图片
+resize 不在 capture range 内。默认不启用该选项。日志确认 capture range
+开始和结束，采集与 CSV/SQLite 导出均退出 0。
+
+固定 `ps20-indoor-001`，native 执行一次 prefill 和一次 generation，输入
+570、输出 95、实际 decode stage 94 次；严格 JSON 有效，与此前同图 PS20
+原始输出和输出计数一致。GPU event 共有 44160 条。SQLite 中 94 次成功的
+cudaGraphLaunch 与 94 个 decode 步骤一致，通过 correlationId 关联到
+42488 条 graph-node kernel 事件，每次 replay 452 条；这是实际 replay 的
+直接证据，且 95 次主 GEMM 中 94 次属于这些 Graph launch。
+
+| GPU kernel | 次数 | 总 GPU event 时长 | 平均时长 | kernel 总时长占比 |
+| --- | --- | --- | --- | --- |
+| sm80 FP16 GEMM，tile256x64x32、stage3、aligna2/alignc2 | 95 | 10502.18 ms | 110.55 ms | 83.55% |
+| INT4 WoQ GEMV，NPerBlock=2、block=256 | 18424 | 1332.89 ms | 0.0723 ms | 10.60% |
+| INT4 W4A16 GEMM T2 | 196 | 264.06 ms | 1.3473 ms | 2.10% |
+
+全部 kernel event 时长之和为 12569.47 ms，transfer 为 1.69 ms；这不是
+wall time，事件可能重叠。95 次 cudaStreamSynchronize 的 host 等待合计
+12504.32 ms，与 GPU 执行重叠，不能再相加或作为独立瓶颈。首要目标是主
+FP16 GEMM，当前证据不支持优先优化仅 3.76 ms 的 sampling kernel 总时长。
+
+同机 engine inspector 成功读取 2144 个 layer 名，但原 engine 只保存
+LAYER_NAMES_ONLY，没有完整 shape/tactic 或层到 kernel 的绑定。主 GEMM 的
+grid 为 (1,2374,16)，与大输出投影的假设相符；尚不能将具体模型算子或 LM
+head 身份写成已证明事实。后续先补 ONNX/层映射，再验证保持权重和词表不变
+的 GEMM/GEMV 或 tactic 候选。已检查的 Jetson 与 WSL 项目 Python 环境均未安装 ONNX 解析库。
+
+本轮是单图、有 native timer 和 Nsight 开销的诊断，native wall 约 15.805 s
+包含 profiler 开始/停止开销，不更新常规吞吐基线。未改权重、输入、功耗模式
+或原 engine 元数据；采集进程已退出，临时磁盘 swap 仍未启用。
+
+完整本地证据位于 `reports/jetson-readiness-20261012/`：
+
+- `nsight_native_evidence.json` 保存原始报告、SQLite、四份 CSV、native probe、
+  执行命令与环境，SHA-256
+  `966a996ff5899c737db7ad93bff27a8256f77724e074da792e6092054e10022e`。
+- `nsight-native-artifacts/generation.nsys-rep`：SHA-256
+  `590d10febd6ebf70971fffffb10de2856e53008f9abf7ad8674cf6801bb59ab0`。
+- `nsight_native_kernel_summary_v2.json` 与 `nsight_native_analysis.json`
+  保存分类、API/kernel 关联与验证边界；`analyze_native_nsight.py` 保留查询。
+- `engine_inspector_evidence.json` 保存完整层名与 inspector 执行源码，SHA-256
+  `2dac4d5905e1481faab873758ce928c70d7a442ce52797225b560d86eb7449c0`。

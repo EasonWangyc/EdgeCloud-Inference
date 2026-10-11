@@ -56,6 +56,18 @@ class NsightTraceComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not a parksight"):
             compare_summaries({"schema_version": "wrong"}, _summary("b", 2.0, 1.0))
 
+    def test_changed_or_missing_classification_version_requires_raw_resummary(self):
+        baseline = _summary("a", 100.0, 4.0)
+        candidate = _summary("b", 80.0, 3.0)
+        candidate["classification_version"] = "parksight_cuda_kernel_names_v2"
+        with self.assertRaisesRegex(ValueError, "classification versions"):
+            compare_summaries(baseline, candidate)
+        baseline["classification_version"] = "older"
+        with self.assertRaisesRegex(ValueError, "classification versions"):
+            compare_summaries(baseline, candidate)
+        baseline["classification_version"] = candidate["classification_version"]
+        self.assertEqual(compare_summaries(baseline, candidate)["trace"]["kernel_duration_ms"]["absolute"], -20.0)
+
 
 if __name__ == "__main__":
     unittest.main()
