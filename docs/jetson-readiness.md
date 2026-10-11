@@ -387,3 +387,50 @@ swap 未启用；测量服务已退出，端口 18080 无监听，图片与原 e
 `reports/jetson-readiness-20261012/ps20_greedy_study.json`，SHA-256
 `bdb3cdf0d8adbfa964c11fb2666c80ecc8f1957fdc3afc9fa7b396e879c0c866`；
 同目录 `ps20_greedy_comparison.json` 保存逐样本比较和全部指标。
+
+## 阶段 profiling 开启 / 关闭 / 开启复验
+
+2026-10-12 在同一 Jetson 15W mode 0 依次完成三个独立服务的冻结 PS20
+study，每档 20/20 后端执行与严格 JSON 校验，告警和失败均为零。三档 engine、
+native binding、图片哈希与功耗模式一致；关闭档和开启复验各 20 条原始输出、
+assessment、输出 token 数和 workload identity 均与开启前测一致。
+
+| 配置 | HTTP TTFT p50（ms） | E2E p50（s） | 墙钟输出吞吐（tokens/s） |
+| --- | --- | --- | --- |
+| profiling 开启前测 | 567.40 | 10.488 | 7.3378 |
+| profiling 关闭 | 567.23 | 10.488 | 7.3389 |
+| profiling 开启复验 | 565.96 | 10.486 | 7.3361 |
+
+关闭档使用 `configs/studies/jetson_edgellm_int4_profiling_off_ps20_pilot.json`。
+隔离 launcher 显式关闭 profiling，逐请求检查实际状态与 timer 快照；20 条
+均为关闭且计时器未增长。SSE 输出计数、事件持久化与状态审计仍存在，因此这是
+关闭 CUDA 阶段计时的参考，不能称为完全无插桩基线。input/decode 计数和阶段
+耗时保持未知；不能从 output tokens 自动推算并补填。
+
+关闭档旧验收 scope 字符串误沿用 profiling-enabled 模板，原始文件保留。
+派生摘要明确纠正该描述，实际状态由逐请求审计裁定；旧汇总的未知 token 总数
+另依据原始记录纠正为 null。修正不改变时延、吞吐或原始 GPU 证据。
+
+三档完整服务期设备 RAM 采样峰值为 5154/5106/5151 MB，zram 用量峰值
+1638/1639/1640 MB，VDD_IN 均值为 9.534/9.510/9.555 W，GPU 温度峰值为
+51.906/51.812/52.500°C。采样含初始化，均是设备级指标，不能当作单请求
+GPU 内存或能耗；前后都没有启用磁盘 swap。性能差异很小，本轮不支持稳定加速
+结论，也不把 48 MB 设备 RAM 差异归因于 profiling 本身。
+
+开启复验记录新服务进程启动到 HTTP health 成功为 10077.95 ms；250 ms
+健康检查轮询，排除包准备与 engine 哈希时间。该值受现有文件缓存影响，不是
+系统冷启动或单独的 engine 加载时间；StudyReport 的 cold_start_ms 仍为空。
+
+板端目录分别为 `artifacts/runtime/ps20-explicit-greedy-20261012/`、
+`ps20-profiling-off-20261012/`、`ps20-profiling-on-recheck-20261012/`。
+三档服务均已退出，18080 无监听，原图片与 engine 元数据未变。
+本地 `reports/jetson-readiness-20261012/` 保存全部原始 SSE、日志、launcher、
+代码哈希、报告和 `profiling_comparison.json`；新增原始文件 SHA-256：
+
+- `ps20_profiling_off_study.json`：
+  `cac74e1b06a7b7be148845da4243da3397a9a058600fdeaf276ff03e30f6cf49`。
+- `ps20_profiling_on_recheck_study.json`：
+  `88feb993fc19081f1af9be0d68346867d295bb9eefe2fc3ae1f0aff17ab42471`。
+
+风险等级准确率仍为 0.35、事件 micro-F1 为 0；本轮只关闭框架测量差异的
+验证缺口，业务效果、FP16 内存限制及历史导出 revision 绑定仍需继续处理。

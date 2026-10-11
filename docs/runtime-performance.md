@@ -616,3 +616,29 @@ Edge HTTP Adapter 显式发送 temperature=0、top_k=1、top_p=1.0，避免 nati
 0.35、事件 micro-F1 0、语义一致率 0.10；此次改动只验证框架行为。
 模型 revision 与历史导出尚未绑定，不与服务器 vLLM 数据计算板端加速比。
 完整配置、证据路径、哈希与比较范围见 [Jetson 验收记录](jetson-readiness.md)。
+
+## Token 汇总的缺失测量
+
+`performance_metrics.token_counts` 中 input/output/decode 总数表示已有测量的和，
+相邻的 `*_usage_record_count` 表示覆盖条数。完全没有测量时总数为 `null`，
+真实测得零 token 时仍为 `0`；部分记录有测量时只汇总已测值，不能解释为
+整个工作负载的完整 token 总数。墙钟输出吞吐仍要求全部完成记录都有输出
+计数，严格 decode 吞吐只使用计数与阶段耗时同时存在的记录。
+
+旧报告不覆盖。2026-10-12 profiling 关闭 study 的原始记录中 input/decode
+均未知，旧版汇总曾显示零；依据原始 20 条记录重新计算的结果单独保存在
+`reports/jetson-readiness-20261012/profiling_off_metrics_corrected.json`，
+input/decode 总数为 null、output 总数为 1550，其余性能字段逐项保持一致。
+
+## Jetson 阶段 profiling 开销复验
+
+2026-10-12 同机 15W 冻结 PS20 开启 / 关闭 / 开启，各 20 条成功；关闭与
+复验的全部输出及输出 token 数和前测一致。HTTP TTFT p50 分别为
+567.40 / 567.23 / 565.96 ms，E2E p50 为 10.488 / 10.488 / 10.486 s，
+墙钟输出吞吐为 7.3378 / 7.3389 / 7.3361 tokens/s，未显示稳定加速。
+
+关闭档保留 SSE 计数、事件记录及 profiling 状态审计，20 次均确认状态关闭、
+CUDA timer 未增长；阶段耗时和 input/decode 计数为空。此结果只隔离阶段
+profiling，不表示完全无插桩。新服务进程到健康检查成功的复验值为 10.078 s，
+不等同于系统冷启动。证据、设备遥测、旧摘要文字与零值修正的说明见
+[验收记录](jetson-readiness.md)。

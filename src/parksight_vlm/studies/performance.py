@@ -102,11 +102,11 @@ def compute_performance_metrics(
             ]) else None
         ),
         token_counts={
-            "input_tokens": sum(record.input_tokens or 0 for record in backend_completed_records),
-            "output_tokens": sum(record.output_tokens or 0 for record in backend_completed_records),
+            "input_tokens": _measured_token_sum(backend_completed_records, "input_tokens"),
+            "output_tokens": _measured_token_sum(backend_completed_records, "output_tokens"),
             "input_usage_record_count": sum(record.input_tokens is not None for record in backend_completed_records),
             "output_usage_record_count": sum(record.output_tokens is not None for record in backend_completed_records),
-            "decode_tokens": sum(record.decode_tokens or 0 for record in backend_completed_records),
+            "decode_tokens": _measured_token_sum(backend_completed_records, "decode_tokens"),
             "decode_usage_record_count": sum(record.decode_tokens is not None for record in backend_completed_records),
             "decode_rate_record_count": decode_rate_record_count,
         },
@@ -118,6 +118,12 @@ def compute_performance_metrics(
             and all(record.output_tokens is not None for record in backend_completed_records) else None
         ),
     )
+
+
+def _measured_token_sum(records: Sequence[InferenceRecord], field: str) -> int | None:
+    """Sum observed counts; unknown coverage is reported separately, never as zero."""
+    values = [value for record in records if (value := getattr(record, field)) is not None]
+    return sum(values) if values else None
 
 
 def _stage_summaries(records: Sequence[InferenceRecord]) -> dict[str, PercentileSummary]:

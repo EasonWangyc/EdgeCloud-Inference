@@ -65,6 +65,13 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assertEqual(metrics.failed_request_stage_latency_ms, {})
         self.assertIsNone(metrics.attempted_requests_per_second)
         self.assertIsNone(metrics.successful_requests_per_second)
+        self.assertIsNone(metrics.token_counts["input_tokens"])
+        self.assertIsNone(metrics.token_counts["output_tokens"])
+        self.assertIsNone(metrics.token_counts["decode_tokens"])
+        serialized = json.loads(json.dumps(metrics.to_mapping()))
+        self.assertIsNone(serialized["token_counts"]["input_tokens"])
+        self.assertIsNone(serialized["token_counts"]["output_tokens"])
+        self.assertIsNone(serialized["token_counts"]["decode_tokens"])
 
     def test_timeout_tail_and_invalid_json_cost_are_visible_in_separate_populations(self):
         assessment = ParkingAssessment.from_mapping({
@@ -124,14 +131,19 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assertEqual(metrics.token_counts["decode_tokens"], 9)
         self.assertEqual(metrics.token_counts["decode_rate_record_count"], 1)
         unknown = replace(record, decode_tokens=None)
+        unknown_metrics = compute_performance_metrics([unknown])
+        self.assertIsNone(unknown_metrics.token_counts["decode_tokens"])
+        self.assertEqual(unknown_metrics.token_counts["decode_usage_record_count"], 0)
         metrics = compute_performance_metrics([record, unknown])
         self.assertEqual(metrics.decode_tokens_per_second, 450)
         self.assertEqual(metrics.token_counts["decode_usage_record_count"], 1)
         self.assertEqual(metrics.token_counts["decode_rate_record_count"], 1)
+        self.assertEqual(metrics.token_counts["decode_tokens"], 9)
         self.assertIsNone(compute_performance_metrics([unknown]).decode_tokens_per_second)
         first_only = replace(record, output_tokens=1, decode_tokens=0, stage_timings=StageTimings(prefill_ms=20))
         self.assertIsNone(compute_performance_metrics([first_only]).decode_tokens_per_second)
         self.assertEqual(compute_performance_metrics([first_only]).token_counts["decode_usage_record_count"], 1)
+        self.assertEqual(compute_performance_metrics([first_only]).token_counts["decode_tokens"], 0)
 
 
 if __name__ == "__main__":
