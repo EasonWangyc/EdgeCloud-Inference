@@ -511,8 +511,8 @@ FP16 GEMM，当前证据不支持优先优化仅 3.76 ms 的 sampling kernel 总
 同机 engine inspector 成功读取 2144 个 layer 名，但原 engine 只保存
 LAYER_NAMES_ONLY，没有完整 shape/tactic 或层到 kernel 的绑定。主 GEMM 的
 grid 为 (1,2374,16)，与大输出投影的假设相符；尚不能将具体模型算子或 LM
-head 身份写成已证明事实。后续先补 ONNX/层映射，再验证保持权重和词表不变
-的 GEMM/GEMV 或 tactic 候选。已检查的 Jetson 与 WSL 项目 Python 环境均未安装 ONNX 解析库。
+head 身份写成已证明事实。本次 trace 的范围止于 kernel；后续 ONNX 图检查与
+现有 level1 候选的完整工作负载复验见下节。项目 Python 环境仍无需 ONNX 依赖。
 
 本轮是单图、有 native timer 和 Nsight 开销的诊断，native wall 约 15.805 s
 包含 profiler 开始/停止开销，不更新常规吞吐基线。未改权重、输入、功耗模式
@@ -529,3 +529,226 @@ head 身份写成已证明事实。后续先补 ONNX/层映射，再验证保持
   保存分类、API/kernel 关联与验证边界；`analyze_native_nsight.py` 保留查询。
 - `engine_inspector_evidence.json` 保存完整层名与 inspector 执行源码，SHA-256
   `2dac4d5905e1481faab873758ce928c70d7a442ce52797225b560d86eb7449c0`。
+
+## Builder level1 候选全流程复验（2026-10-12）
+
+在同一 Jetson、15W mode 0、冻结 PS20、448×448、显式贪心和 batch=1 下，
+依次运行 level0 / level1 / level0 回测 / level1 复验，各自启动独立服务。
+全部保持 Graph、native stage profiling 与 SSE 保存，无独立预热。
+
+| 引擎与次序 | HTTP TTFT p50 | 端到端 p50 | 墙钟输出 tokens/s |
+| --- | ---: | ---: | ---: |
+| level0 前测 | 566.53 ms | 10.483 s | 7.3383 |
+| level1 首测 | 465.65 ms | 2.784 s | 27.5918 |
+| level0 回测 | 566.91 ms | 10.486 s | 7.3376 |
+| level1 复验 | 468.49 ms | 2.787 s | 27.5744 |
+
+level1 两次吞吐约为 level0 前测的 3.76 倍；四组各 20 条均完成且严格 JSON
+有效，逐样本 raw output、assessment、workload identity 和三类 token 计数
+完全一致。各组总输入/输出/decode 为 11400/1550/1530；阶段计数连续。
+风险准确率仍为 0.35、事件 micro-F1 为 0，性能改善不代表领域效果改善。
+全部服务已退出，端口关闭，原图片和元数据保持不变。
+
+level0 LLM engine SHA-256 为
+`33466f3f1149801bf496737fbe1e69634b8018ece9a0c5bccd8ff83af64afab4`，
+现有 level1 候选为
+`207e109fcca28ac29ae0348d8dd517e61a6291704a8fea08c53644574f28d345`。
+两者配置均为 i768/k1024、全词表 151936、INT4 backbone；五份 LLM 元数据
+及 embedding 内容相同，复用同一 FP16 visual engine 和当前 native binding。
+候选通过独立目录组合与安全元数据副本加载，未改默认 engine。
+历史 level1 构建记录缺少导出图/权重文件哈希，因而尚不能证明完整权重来源
+等价；当前 pilot 输出一致也不能代替该来源证据或更大规模验收。
+
+只读 ONNX 检查确认 `logits <- Cast <- node_linear(MatMul)`，匿名权重
+`val_1246` 为 FLOAT16 `[2048,151936]`。图 protobuf SHA-256 为
+`78c7badb4cfa1f81dd71a66742b811c89131e232c7af6522fd73956ea59e9603`。
+检查仅解析图，不读外部权重；ONNX 1.19.0 安装于 `/tmp` 独立环境，未改项目
+或 Jetson 依赖。历史 detailed engine 的输出投影 tactic 差异支持该优化方向，
+但当前 kernel 到 layer 的直接绑定仍待 level1 trace 核验。
+
+本地证据目录 `reports/jetson-readiness-20261012/`：
+
+| 完整证据 | SHA-256 |
+| --- | --- |
+| `ps20_level1_study.json` | `1cf1456c527ffd6d76d6f5f2b8fdedde32ab9942bda6f23d8745bf3c5525aeca` |
+| `ps20_level0_return_final_fetch.json` | `63aa70a2c0352a4ca846700e4cdbc643a65aac00f7cd736f90ab3621563a4ad4` |
+| `ps20_level1_recheck_study.json` | `de571ae81f5b708afcd7162d9c698c4b829424ba165cab83211baeaa5f931410` |
+| `onnx_output_projection.json` | `6ba6b65e2ce18ca0621977e365853a306235cfdae913fbdec4f57a24bd5592f3` |
+
+`compare_builder_levels.py` 保留逐样本比较、engine 身份与退出检查，生成
+`builder_level_comparison.json`。新增两个 study 配置区分候选与回测；engine
+选择仍由服务启动参数确定，配置本身不切换 engine。
+
+## Level1 Nsight 同图归因复验（2026-10-12）
+
+独立目录 `artifacts/runtime/nsight-level1-generation-20261012/` 固定 level1
+engine、原 visual engine、当前 plugin/native binding、冻结图片与贪心参数。
+开始前核对各二进制哈希、15W mode 0 与无活动推理/构建进程；仅在生成范围
+采集 CUDA node trace。采集和 CSV/SQLite 导出均退出 0，进程已退出。
+
+同图输入 570、输出 95、decode stage 94；严格 JSON、原始输出和 assessment
+与两组 PS20 报告一致。SQLite 中 94 次 Graph launch 全部成功，按进程命名空间
+和 correlationId 关联到 42488 条非零 graphNodeId kernel 事件，每次 452 条。
+原主 FP16 GEMM 在 level1 中换为 `trt_ampere_h16816gemm_128x64_ldg8_tn_v1`，
+共 95 次，其中 94 次关联 Graph replay。
+
+| Kernel | level0 总 event 时长 | level1 总 event 时长 | level1 平均 | level1 kernel 时长占比 |
+| --- | ---: | ---: | ---: | ---: |
+| 原主 FP16 GEMM / 新 Ampere half GEMM，95 次 | 10502.18 ms | 983.75 ms | 10.36 ms | 32.28% |
+| INT4 WoQ GEMV，18424 次 | 1332.89 ms | 1334.64 ms | 0.0724 ms | 43.79% |
+| INT4 W4A16 GEMM T2，196 次 | 264.06 ms | 264.07 ms | 1.3473 ms | 8.66% |
+
+主 GEMM 平均从 110.55 ms 降至 10.36 ms，约 10.68 倍；INT4 GEMV 基本不变，
+现在是最大的单一 kernel family。全部 kernel event 时长从 12569.47 ms 降至
+3047.81 ms，这个比值不是端到端加速比。当前 native stream 约 6.108 s，
+包含 profiler 开始/停止开销，不更新常规 PS20 基线。精确模型 layer 到该
+kernel 的直接绑定及历史权重来源仍未证明，不能直接套用旧 detailed engine
+中的 nn tactic 名称解释当前 tn kernel。
+
+Nsight 汇总分类升级为 `parksight_cuda_kernel_names_v3`，补充当前实测 Ampere
+half GEMM 和 fused FP16 GEMM 符号。两份原始 CSV 均用 v3 重算后比较；v2
+归档保留。`analyze_edgellm_nsight_replay.py` 提供只读 SQLite 关联与 native
+计数差值核验，不把同步 host 等待与 GPU 时长相加，不固定每次 replay 的
+kernel 数量；缺失事件、失败 launch 或歧义 correlation 不通过核验。
+
+本地完整证据 `reports/jetson-readiness-20261012/nsight_level1_evidence.json`
+SHA-256 为 `0fadfa436a0ab7fd13d700fa59765645996ec42d55975e7a58f853f114eae613`，
+其中原始 `generation.nsys-rep` 为
+`549464dfd532cec1aaa73bc63fc3f93fb2c765c500638daea6e1cf8206357f79`。
+解码文件位于 `nsight-level1-artifacts/`，每份按归档哈希校验；重算摘要和
+关联结果为 `nsight_level1_kernel_summary_v3.json`、
+`nsight_level0_level1_comparison_v3.json`、`nsight_level1_replay_analysis.json`。
+下一步以当前 level1 为性能候选参考，评估 INT4 GEMV 访存/融合方向，并补齐
+可复现的导出与构建来源，保持完整词表、冻结工作负载和输出验收。
+
+## QKV 与 gate/up 融合候选（2026-10-12）
+
+只读提取并核对现有导出模型的 196 份 pre-quant scale。28 层的 Q/K/V
+逐字节相同，gate/up 也逐字节相同；这 140 份 scale 均为 FP16 全 1 向量。
+其余 O/down scale 不属于本候选。原外部权重文件 1350303744 字节，SHA-256
+`235606ea014b1377560e6cc8ea22792a7a65c0289f5edfdf9d546e4911720724`。
+
+`prepare_edgellm_int4_fusion.py` 根据已核验的 plugin 源码布局生成独立图：
+packed weight 按 N-major/interleave4 连接，group scale 按行连接，输出按
+最后一维 Slice 恢复原名称。要求相同 hidden input、相同 scale 字节、group128
+与 N/K 对齐；拒绝不完整分组、布局来源变化和已有输出目录。56 组融合使
+INT4 plugin 196→112，图节点 1730→1702，依赖顺序和 graph outputs 保留。
+
+`materialize_edgellm_int4_fusion.py` 校验原数据和候选图 SHA-256，以 1 MiB
+以内的复制块写入临时目录，完成后发布新目录；原数据仅以只读访问及 symlink
+复用。新增重排数据 484442112 字节，独立再次逐段比较全部 weight blocks 和
+scale rows，均逐字节一致。candidate graph SHA-256 为
+`8e65b9669790ce77b93ffeade998331d6e452f26c473f4951749475d75158c61`，
+fusion data 为 `91165e177941a903b8f50b307b1d2f11e78f8a6960cac78f0597fe65dd807f6f`。
+参数字节验证不能替代 GPU 执行验证。
+
+初次构建前元数据检查发现 source config 与 engine config 的差别仅为新增
+`builder_config`；embedding、tokenizer 和模板均与 control 一致。使用原导出
+config 后，level1/workspace1024、i768/k1024、无 weight streaming 构建成功，
+耗时 134.34 s。当时 wrapper 只传 `EDGELLM_PROFILING_VERBOSITY`，原 builder
+不识别此环境键；后续 inspector 实测仍为 LAYER_NAMES_ONLY。输出 engine 1361856164 字节，SHA-256
+`14f4cd6638c621caa2515daf13a36b1483747ce69068172dcef6d5c972d5aacb`。
+源 config SHA-256 为 `4b56a8b3b8654cf199e52871ca68cf715bad0b5172bbe347331ca3f91830d179`；
+构建后 engine config 与原 level1 完全一致。历史导出到 HF revision 的绑定仍未证明。
+
+单图检查严格 JSON 有效，570/95/94 输入/输出/decode 与 control 相同，原始
+输出和 assessment 相同。随后冻结 PS20 20/20 完成，所有输出、assessment、
+workload identity 与三类 token 计数均匹配，质量指标不变。首测及原 level1
+回测分别启动独立服务，保留相同 visual engine、native binding、15W mode 0、
+Graph 与阶段计时；回测与此前首测跨运行时段，未固定 GPU 时钟。
+
+| 运行 | 墙钟输出 tokens/s | 端到端 p50 | HTTP TTFT p50 | decode p50 |
+| --- | ---: | ---: | ---: | ---: |
+| 原 level1 既有复验 | 27.5744 | 2.787 s | 468.49 ms | 2.114 s |
+| 完整融合首测 | 26.8691 | 2.854 s | 459.89 ms | 2.189 s |
+| 原 level1 回测 | 27.5812 | 2.786 s | 465.91 ms | 2.113 s |
+
+融合首测比回测吞吐低 2.58%，当前 engine **不晋级**。两个原 level1 结果
+接近，不能把 plugin 数量减少当作全流程加速。全部服务退出、端口关闭，
+原图片和元数据未改；冷启动及逐请求内存/功耗仍未由此证明。
+
+同图 Nsight 95 次 forward、94 次成功 Graph replay，每次 kernel 从 452 降到
+368，关联事件 42488→34592。INT4 GEMV 18424→10528 次，总 event 时长
+1334.64→1273.03 ms，减少 4.62%；prefill INT4 GEMM 为 112 次、261.39 ms。
+但原主 `trt_ampere_h16816gemm_128x64_ldg8_tn_v1` 被此构建的
+`sm50_xmma_cublas_gemvx_f16f16_f32_f32_nn_n_int32_unit_n_launch_param64x2x1_strided_copyx_unit_stride_execute_kernel_trt`
+替换，同为 95 次，平均 10.36→12.03 ms，总时长增加 158.79 ms，超过 GEMV
+节省的 61.61 ms。完整 kernel event 时长 3047.81→3144.59 ms；这不是 wall time。
+该次 engine 缺少 DETAILED inspector，故无法由它直接核对输出层 tactic。
+
+更充分的 level2/workspace1024 搜索在 87.24 s 后退出 1：日志明确显示
+622329856 字节分配的 CUDA error 2、tactic 被跳过，最终无可用实现；没有
+生成 engine，也没有 SIGKILL。不能仅依据最终“无可用实现”判为算子不支持，
+也不能将其写成内核 OOM killer 结果。后续单独降低 workspace 至 512 MiB，
+保持相同融合图、权重、profile 和精度。workspace512 重试在 80.65 s 后
+失败：真实 builder 返回 -9/SIGKILL，外层 Python 返回 1，未产生 engine。
+本次未提前记录 builder 子进程 PID，不能自动将该信号确认为 OOM killer。
+原始证据 `int4_fusion_build_level2_w512_evidence.json` 的 SHA-256 为
+`88effe322cb0749e95985ec2d5d08b3d286dbd76d5cc5d2f12a43eafa099be7e`。
+
+完整本地证据位于 `reports/jetson-readiness-20261012/`：
+
+| 证据 | SHA-256 |
+| --- | --- |
+| `prequant_scale_evidence.json` | `4da659d714aabd20effe0b7b770453c07c98633188a28822f0c588527dddf9b5` |
+| `int4_fusion_materialization.json` | `9d5ef14ca5622889103862a2f8eb287b496a6b804cba573f6d017a8a485892d1` |
+| `int4_fusion_build_evidence.json` | `cc091ce88f6251e77047a80760addc0124c93f6840c215d6e0319faec4a880dd` |
+| `ps20_int4_fusion_study.json` | `d41a94f9588e23be3d3490f13e946b55d886968758499989afed34779d41d95b` |
+| `ps20_level1_fusion_return_study.json` | `42d7cb7a19bbd0b4213987a49dd5453c140f4884f9aad1ce115401075385919f` |
+| `nsight_int4_fusion_evidence.json` | `ad807b1800f609637f056fd7609d7e3b8e5b44087a77f14fd1875cb1c3b23469` |
+
+`int4_fusion_level1_return_comparison_v2.json` 保存逐样本比较；
+`nsight_int4_fusion_replay.json` 保存 Graph 关联。新 GEMVX 用
+`parksight_cuda_kernel_names_v4` 单列 `fp16_gemv`，两份原始 CSV 均重算 v4，
+旧 v3 摘要保留。level2 失败原始报告与日志为
+`int4_fusion_build_level2_evidence.json`。
+
+首次成功的 fusion engine inspector 为 TensorRT 10.3.0、1640 layers、
+LAYER_NAMES_ONLY，不能读取完整 tactic/shape。SDK 的 LLM builder 虽无
+`EDGELLM_PROFILING_VERBOSITY` 环境键，但原生支持 `--profilingDetailed`；
+以相同候选图和 level1/workspace1024 隔离重建成功，engine SHA-256 为
+`3baab9239bc0a46327dc94271108e4b85f21de5234624e75e45722c14a4132f9`。
+实际 inspector 返回 `ProfilingVerbosity.DETAILED`、1640 层；输出层
+`node_linear` 的两个 profile 均为 `ampere_h16816gemm_128x64_ldg8_tn_v1`。
+一张冻结图片的原生推理为有效 assessment；`native_stream_total_ms=3066.03`，
+这个单样本结果不用于判定 20 样本吞吐提升。
+
+使用独立编译的 timing-cache builder 重建相同 fusion 图后，实际生成
+687700 字节 cache（SHA-256
+`690659c06f3424fd256947116337d17aa0bf3d6cf14bc67ba9842669863639c6`）；
+engine SHA-256 为
+`48003ff1fa342ff07a5361c5a049dd578a76bfc45d01b3d3e4ab1d580873709a`，
+inspector 同样为 `DETAILED`，输出层 tactic 同为 Ampere GEMM。
+这一 engine 在冻结 PS20 上两次得到 28.122、28.178 output tokens/s；夹在中间
+的旧 level1 对照为 27.558 output tokens/s，后一次对照提升 2.25%。
+decode p50 为 2064.17/2059.90 ms，对照为 2110.59 ms；20/20 JSON 有效，
+全部逐样本输出与旧 level1 一致。
+`ps20_int4_fusion_detailed_study.json`、`ps20_fusion_aba_studies.json` 和
+`int4_fusion_aba_control_to_repeat_comparison_v2.json` 保存完整事实。
+此增益属于新 engine 的同机实测；timing cache 只参与构建，不是推理期加速机制。
+新 engine 的详细 inspector 将 `node_linear` 两个 profile 均标为 Ampere GEMM
+tactic；同一张冻结图的 Nsight 确认该 kernel 出现 95 次、总 GPU event 时长
+981.45 ms，而未开启详细信息的融合 engine 使用 FP16 GEMVX 95 次、1142.54 ms。
+详细候选与原 level1 的总 kernel event 时长为 2976.30 对 3047.81 ms；
+INT4 类合计为 1531.64 对 1598.72 ms。94 次成功 Graph replay 均关联
+368 个 kernel，原始输出与两份旧 trace 完全相同。
+`nsight_int4_fusion_detailed_evidence.json`、`nsight_int4_fusion_detailed_replay.json`、
+`nsight_int4_fusion_detailed_vs_level1_v4.json` 保存原始轨迹、关联与分类对比。
+GPU event 时长不能直接当作端到端时延。
+对同一 fusion 图、同一 builder/config 再构建一次时，TensorRT 日志明确从
+687700 字节 cache 加载 315 个 timing 条目；构建时间由首次创建的 113.17 秒
+降至复用的 35.37 秒（约 3.20 倍）。复用后的 engine 可反序列化，仍为
+`DETAILED`、1640 层，输出层 tactic 相同。完整构建报告和原始日志摘要见
+`int4_fusion_cache_build_evidence.json`；复用 engine 的 SHA-256 为
+`e32de6bd725bac00a2e63a4ecb2c8582d57b74fd838f89c31b4a5ebc90dbb753`。
+`fusion_inspector_audit_evidence.json` 保存完整 inspector、执行代码、源码和
+二进制环境键，SHA-256 为
+`ed82a82ca4e0d2d3037a27c2f1e85b2746ad85325eee1d50a1dde5097a69ca18`。
+
+构建脚本对 LLM 的 `detailed` 优先使用已核验的原生 CLI；其他精度级别
+或 visual builder 需编译相应环境控制。timing cache 仍要求二进制中有
+`EDGELLM_TIMING_CACHE_PATH`，并使用独立 builder 路径；键存在只是能力提示，
+实际仍以 inspector 和生成的 cache 为准。报告未请求 profiling 时保留 null，
+不再将未知默认值写成 none。
+每个构建 step 保存真实子进程 PID，成功/非零退出/SIGKILL/启动失败保持独立
+事实，`oom_confirmed` 仍需外部证据。原始旧报告保留，不补写未观测的 PID。

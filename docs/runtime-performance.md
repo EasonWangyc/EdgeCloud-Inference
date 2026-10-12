@@ -669,3 +669,87 @@ GEMM 占全部 kernel event 时长的 83.55%，优先定位其模型算子与 ta
 事件时长之和不等于 wall time；同步 API 的 host 等待与 GPU 工作重叠，不能
 重复计时。单图、有 Nsight 开销的诊断不替代冻结 PS20 性能结论，详细证据见
 [Jetson 验收记录](jetson-readiness.md)。
+
+## Jetson Builder level1 候选
+
+2026-10-12 冻结 PS20 在 level0 / level1 / level0 / level1 顺序下，墙钟输出
+吞吐为 7.3383 / 27.5918 / 7.3376 / 27.5744 tokens/s，端到端 p50 为
+10.483 / 2.784 / 10.486 / 2.787 s。候选两次约为 level0 的 3.76 倍；全部
+20 条 raw output、assessment、workload identity 和 token 计数一致。
+这是同板、batch=1、Graph 与阶段计时开启的 pilot 结果，无独立预热，不能
+推为并发或长期稳定性结论。HTTP TTFT 不包含客户端预处理。
+
+候选复用相同 visual engine 和 native binding；默认 engine 保持原配置。
+历史候选缺少导出权重哈希绑定，来源等价尚待补齐；风险准确率 0.35、事件
+micro-F1 0 未改变。引擎身份、完整报告 SHA-256、复验与 ONNX 输出投影证据
+见 [Jetson 验收记录](jetson-readiness.md#builder-level1-候选全流程复验2026-10-12)。
+
+## StudyReport 比较规则
+
+`compare_tensorrt_study_reports.py` 输出 v2 schema。吞吐与质量按越高越好计算，
+时延、内存、功耗与温度按越低越好计算；`speedup` 对吞吐为候选/基线，对
+时延为基线/候选。缺失或非有限值没有加速比，不使用旧 v1 吞吐方向解释结果。
+
+`match.comparable` 要求冻结 workload、runtime、并发/负载模式、重复次数、
+同机测量环境、输入图片哈希和逐 case 输入计数匹配。重复记录按多重集合
+比较，允许记录重新排序，保留重复次数。缺失记录或环境时标为未核验。
+`match.records.exact_output_match` 单独检查原始输出、assessment、输入/输出/
+decode token 和 failure；未知 token 不等于已验证一致。输出变化列出 case ID，
+不隐藏质量回归。可比和输出一致均不证明 engine 权重来源，也不是晋级授权。
+
+将完整证据包里的 StudyReport 提取为两个 JSON 文件后执行：
+
+```bash
+python scripts/compare_tensorrt_study_reports.py \
+  --baseline reports/jetson-readiness-20261012/level_comparison_baseline_report.json \
+  --candidate reports/jetson-readiness-20261012/level_comparison_candidate_report.json \
+  --output reports/jetson-readiness-20261012/level_comparison-review.json
+```
+
+输出使用新路径，保存两份输入文件的 SHA-256。当前实测重算结果为可比、
+逐样本完全一致、墙钟吞吐加速比 3.7576。
+
+## Level1 GPU 剩余瓶颈
+
+单图 generation trace 中，主 FP16 GEMM 从平均 110.55 ms 降至 10.36 ms；
+INT4 WoQ GEMV 总时长仍约 1335 ms，占 level1 全部 kernel event 时长的
+43.79%，高于主 GEMM 的 32.28%。这将后续优化重点移到 INT4 GEMV，而非
+仅有数毫秒总时长的 sampling。精确 layer attribution 尚未闭环。
+
+两组均观测到 94 次成功 Graph replay，每次 452 条关联 kernel 事件，输出
+一致。汇总分类采用 v3，两份 CSV 必须重算后比较。复查关联的命令为：
+
+```bash
+python scripts/analyze_edgellm_nsight_replay.py \
+  --sqlite reports/jetson-readiness-20261012/nsight-level1-artifacts/generation.sqlite \
+  --probe reports/jetson-readiness-20261012/nsight-level1-artifacts/probe.json \
+  --output reports/jetson-readiness-20261012/replay-review.json
+```
+
+该工具只读 SQLite；当前支持实测 Nsight Systems 2024.5 的 CUPTI global-ID
+编码，不将结果外推到其他 schema。native counter 为累计值，使用前后差值；
+初始 timer 为空仅在原生 generation counter 明确为零时视作首次记录。
+GPU event 总和和带 profiler 开销的 native wall 均不能替代 PS20 性能结果。
+
+## 完整投影融合的首测与回测
+
+相同 PS20、batch=1、15W、Graph 和阶段计时下，QKV＋gate/up 融合的墙钟
+吞吐为 26.8691 tokens/s、端到端 p50 2.854 s；原 level1 回测为
+27.5812 tokens/s、2.786 s。所有输出、assessment、token 与输入均匹配。
+完整融合首测退化约 2.58%，当前 engine 不晋级。
+
+Nsight 中每次 replay 的 kernel 数 452→368，INT4 GEMV 总 event 时长减少
+4.62%，但此构建的主矩阵 kernel 改为 GEMVX，平均 12.03 ms，高于原
+Ampere half GEMM 的 10.36 ms，抵消了融合收益。kernel 数减少与局部耗时
+改善都不能代替端到端验收。回测与首测跨运行时段，未固定 GPU 时钟。
+
+汇总分类升级为 `parksight_cuda_kernel_names_v4`，将明确含
+`gemvx_f16f16_` 的符号单列为 `fp16_gemv`，不将其误报为 other_kernel 或
+INT4 GEMV。两组 CSV 均重算 v4 后比较，旧摘要不覆盖。具体 layer 归因
+仍需足够详细的 engine inspector 与 trace 共同核对。
+
+level2/workspace1024 构建失败的日志含明确 CUDA 分配失败，随后报告无可用
+tactic；不能将最后一条消息单独解释为算子不支持。engine inspector 使用
+只读 mmap，减少 Python 整份 engine 的临时副本；它不消除 TensorRT 自身的
+GPU 权重和上下文占用。完整证据与后续 workspace512 试验见
+[验收记录](jetson-readiness.md#qkv-与-gateup-融合候选2026-10-12)。

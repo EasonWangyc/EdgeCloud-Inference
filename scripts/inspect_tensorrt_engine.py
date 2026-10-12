@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import mmap
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +34,16 @@ def inspect_engine(
     trt.init_libnvinfer_plugins(logger, "")
 
     runtime = trt.Runtime(logger)
-    engine = runtime.deserialize_cuda_engine(path.read_bytes())
-    if engine is None:
-        raise RuntimeError(f"TensorRT failed to deserialize engine: {path}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"TensorRT engine is empty: {path}")
+    with path.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        engine = runtime.deserialize_cuda_engine(data)
+        if engine is None:
+            raise RuntimeError(f"TensorRT failed to deserialize engine: {path}")
+        return _inspect_deserialized_engine(engine, trt, path)
+
+
+def _inspect_deserialized_engine(engine: Any, trt: Any, path: Path) -> dict[str, Any]:
     inspector = engine.create_engine_inspector()
     if inspector is None:
         raise RuntimeError("TensorRT engine inspector is unavailable")
@@ -59,6 +67,11 @@ def inspect_engine(
             "filename": path.name,
             "size_bytes": path.stat().st_size,
             "sha256": sha256_file(path),
+            "loading": "read_only_mmap",
+            "profiling_verbosity": (
+                str(engine.profiling_verbosity)
+                if getattr(engine, "profiling_verbosity", None) is not None else None
+            ),
             "tensor_rt_version": getattr(trt, "__version__", None),
             "num_layers": int(engine.num_layers),
             "num_io_tensors": int(getattr(engine, "num_io_tensors", 0)),

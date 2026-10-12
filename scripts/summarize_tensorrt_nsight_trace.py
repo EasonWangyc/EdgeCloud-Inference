@@ -19,6 +19,7 @@ _TRANSFER_CATEGORIES = {"memcpy", "memset"}
 _CATEGORY_ORDER = (
     "int4_w4a16",
     "fp16_gemm",
+    "fp16_gemv",
     "attention_fmha",
     "attention_xqa",
     "sampling",
@@ -98,7 +99,7 @@ def summarize_trace(path: Path | str, *, label: str | None = None) -> dict[str, 
 
     return {
         "schema_version": "parksight_tensorrt_nsight_trace_summary_v1",
-        "classification_version": "parksight_cuda_kernel_names_v2",
+        "classification_version": "parksight_cuda_kernel_names_v4",
         "summarizer_sha256": sha256_file(Path(__file__)),
         "input": {
             "path": str(trace_path),
@@ -139,8 +140,11 @@ def classify_kernel(name: str) -> str:
     if ("w4a16" in lowered or "w4a16" in lowered.replace(" ", "")
             or "trt_edgellm::kernel::gemv_kernel<" in lowered):
         return "int4_w4a16"
-    if "gemm_f16f16" in lowered:
+    if ("gemm_f16f16" in lowered or re.search(
+            r"\b(?:trt_)?ampere_(?:h16816gemm_|fp16_s16816gemm_fp16_)", lowered)):
         return "fp16_gemm"
+    if "gemvx_f16f16_" in lowered:
+        return "fp16_gemv"
     if "fmha" in lowered or "flash_attention" in lowered:
         return "attention_fmha"
     if "xqa" in lowered:

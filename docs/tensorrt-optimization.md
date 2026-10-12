@@ -27,7 +27,7 @@ plugin 编译，并通过候选 plugin 注入后的 engine 加载、CUDA Graph c
   "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
   "edge_llm_revision": "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
   "tensorrt_version": "10.3",
-  "cuda_version": "12.6",
+  "cuda_version": "12.5",
   "gpu_name": "Jetson Orin Nano",
   "power_mode": "15W_MODE_0",
   "precision": "int4_awq",
@@ -61,7 +61,11 @@ TensorRT 的 `ITimingCache` 可复用已经测过的 layer tactic timing，降�
 前后的构建耗时必须单独记录，不能写成推理加速。仓库的
 `0012-configurable-timing-cache.patch` 使用 `EDGELLM_TIMING_CACHE_PATH` 加载并在构建
 完成后回写 cache，默认以 `setTimingCache(..., false)` 做严格设备校验，不接受跨 GPU
-cache 的静默复用。构建 wrapper 还要求提供与 cache 配套的 sidecar，例如
+cache 的静默复用。2026-10-12 在隔离 builder 上实测生成 687700 字节 cache；
+其 SHA-256 为 `690659c06f3424fd256947116337d17aa0bf3d6cf14bc67ba9842669863639c6`。
+同一 INT4 fusion 图和 BuilderConfig 再构建时，日志确认加载该 cache，耗时从
+113.17 秒降至 35.37 秒；两次均成功生成可反序列化的详细 profiling engine。
+构建 wrapper 还要求提供与 cache 配套的 sidecar，例如
 `configs/tensorrt/timing_cache_binding_jetson_orin_nano_llm_level2.json`：
 
 ```json
@@ -69,7 +73,7 @@ cache 的静默复用。构建 wrapper 还要求提供与 cache 配套的 sideca
   "schema_version": "parksight_tensorrt_timing_cache_binding_v1",
   "device": {
     "gpu_name": "Jetson Orin Nano",
-    "cuda_version": "12.6",
+    "cuda_version": "12.5",
     "tensorrt_version": "10.3.0"
   },
   "builder_config": {
@@ -88,11 +92,16 @@ sidecar 的设备字段和每个 BuilderConfig 字段会在 `llm_build` 启动�
 构建报告会保存 sidecar 的大小、SHA-256 和绑定内容。示例：
 
 ```bash
-git -C /home/ubuntu/TensorRT-Edge-LLM apply \
-  /home/ubuntu/JetsonVLM/patches/tensorrt-edge-llm/0012-configurable-timing-cache.patch
+python3 scripts/prepare_isolated_edgellm_builder.py \
+  --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
+  --patch patches/tensorrt-edge-llm/0012-configurable-timing-cache.patch \
+  --output artifacts/runtime/isolated-builder-timing \
+  --expected-revision 7f061f21f0a581ba234a1e233c9315b89d8e47d6 \
+  --expected-source-sha256 93977184baf6db48a404226538dc572bdfbd9c8f72d194b90c7c568335bba937
 PYTHONPATH=src python3 scripts/build_edgellm_vlm_engines.py \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --expected-revision 7f061f21f0a581ba234a1e233c9315b89d8e47d6 \
+  --llm-builder artifacts/runtime/isolated-builder-timing/llm_build \
   --onnx-root artifacts/onnx/qwen3_vl_2b_int4_awq_n128 \
   --engine-root artifacts/engines/qwen3_vl_2b_int4_awq_i768_k1024_opt2_profile \
   --component llm --max-batch-size 1 --max-input-len 768 \
@@ -276,10 +285,11 @@ fixed A/B；metadata
 
 ## 4. Attention、kernel 与 CUDA Graph 证据
 
-构建用于分析的 engine 时，可在固定的 builder/profile/workspace 条件下应用
-`patches/tensorrt-edge-llm/0010-configurable-profiling-verbosity.patch`，并传入
-`--profiling-verbosity detailed`。该选项只改变 engine inspector 可见的层级信息，
-不应与正式性能 engine 混用。之后在 Jetson 上使用 TensorRT Engine Inspector 或
+LLM builder 原生支持 `--profilingDetailed`；仓库 wrapper 的
+`--profiling-verbosity detailed` 会映射到该参数。`none`/`layer_names_only` 或视觉
+builder 的显式配置仍需 `0010-configurable-profiling-verbosity.patch`。
+详细信息需重建 engine；重建可能选择不同 tactic，因此它也是独立性能候选，
+不能将旧 engine 的时延直接归于新 inspector 输出。之后在 Jetson 上使用 TensorRT Engine Inspector 或
 Edge-LLM 的 `--dumpProfile`，将 layer、tactic、workspace 和 CUDA event 数据保存到
 独立的报告目录。
 
@@ -1544,3 +1554,82 @@ Python 副本完成冻结 PS20 开启/关闭/开启验收；INFO 提示被 logge
 实际导入源码、运行环境和原生捕获日志联合判定。输出完全一致，保留默认开启；
 详细指标与证据见 [Jetson 验收记录](jetson-readiness.md)。捕获日志不单独证明
 Graph replay，后续以 Nsight CUDA trace 核验。
+
+## 输出投影的只读 ONNX 检查
+
+`scripts/inspect_onnx_output_projection.py` 从指定 graph output 反向追踪 Cast 等
+输出节点，要求最终 MatMul 的第二个输入为二维 initializer。它校验 protobuf
+SHA-256，直接解析已校验的字节，不读取 external_data 权重文件；输出路径必须
+尚不存在。缺失、循环、歧义或不支持的路径均报错，不按 initializer 名猜测。
+ONNX 为独立检查依赖，核心运行和无硬件测试无需安装。
+
+在另行准备、安装 `onnx==1.19.0` 的检查环境中执行：
+
+```bash
+python scripts/inspect_onnx_output_projection.py \
+  --model reports/jetson-readiness-20261012/int4_n128_graph.onnx \
+  --model-sha256 78c7badb4cfa1f81dd71a66742b811c89131e232c7af6522fd73956ea59e9603 \
+  --output reports/jetson-readiness-20261012/onnx_output_projection-new.json
+```
+
+当前图的 `logits <- Cast <- node_linear(MatMul)` 使用匿名权重 `val_1246`，
+形状 `[2048, 151936]`、FLOAT16，external_data 长度 622329856 字节。
+这是最终全词表输出投影的图结构证据；它不证明已构建 engine 与该图的权重
+绑定，也不单独证明 Nsight kernel 到具体 layer 的映射。性能候选仍需完整
+工作负载复验，不能用历史 tactic 摘要替代当前实测。
+
+## Level1 后的 INT4 GEMV 优化入口
+
+当前 level1 单图 trace 中 INT4 WoQ GEMV 为 18424 次、总 GPU event 时长约
+1335 ms，占全部 kernel event 时长 43.79%；主 FP16 GEMM 已降到平均 10.36 ms。
+完整同图 Graph replay 和输出核验见 [验收记录](jetson-readiness.md)。
+
+当前只读 ONNX inventory 包含 196 个 `Int4GroupwiseGemmPlugin`、28 个
+`AttentionPlugin`，每个 decoder layer 有 Q/K/V/O、gate/up/down 七个 INT4
+投影。196 个 plugin 没有共用的直接 activation input。Q/K/V 的上游 hidden
+相同，但分别乘以各自 `pre_quant_scale`；gate/up 同样分别缩放。
+不同 initializer 名称不证明数值不同，也不证明可以共用缩放。因此评估
+QKV 或 gate/up 融合前，必须核对缩放内容、packed weight/scale 布局以及输出
+切分语义；不能直接把三个 plugin 改成共享输入的拼接 GEMM。
+
+图 metadata inventory 保存在
+`reports/jetson-readiness-20261012/int4_plugin_graph_inventory.json`，仅解析
+已校验 protobuf，不读外部权重，也不证明当前 engine 与该图的来源绑定。
+后续候选保持完整词表和现有数值语义，以逐样本输出、质量、native 阶段
+时延和完整 PS20 吞吐联合验收，避免只凭 kernel 数下降判定优化成功。
+
+### 已验证的融合准备流程
+
+当前导出已完成缩放值核对：Q/K/V 及 gate/up 共 140 份 scale 均为 FP16
+全 1，分组内逐字节相同。`prepare_edgellm_int4_fusion.py` 只读 protobuf 和
+该核验记录，要求匹配的 plugin packing 源码哈希与有效外部 tensor 范围。
+ONNX 1.19.0 为独立准备依赖；核心测试和 Jetson materializer 不依赖 ONNX。
+
+在已安装该检查依赖的环境中生成新计划：
+
+```bash
+python scripts/prepare_edgellm_int4_fusion.py \
+  --model reports/jetson-readiness-20261012/int4_n128_graph.onnx \
+  --scale-evidence reports/jetson-readiness-20261012/prequant_scale_evidence.json \
+  --output-directory reports/jetson-readiness-20261012/fusion-plan-review
+```
+
+将生成的 `model.onnx`、`plan.json` 放到 Jetson 的 prepared 目录后，以
+SSH 登录后的 Bash 运行 materializer；输出必须使用新目录：
+
+```bash
+python3 scripts/materialize_edgellm_int4_fusion.py \
+  --prepared-directory artifacts/runtime/int4-fusion-prepare-20261012/prepared \
+  --source-data artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/model.onnx.data \
+  --output-directory artifacts/runtime/fusion-review/candidate
+```
+
+权重按 N-major/interleave4 连接，group scale 逐行连接；直接连接整份 scale
+tensor 会打乱 quantization group。materializer 用有界读取、源 SHA-256
+校验和临时目录发布，拒绝覆盖；保留未改数据的 symlink。生成参数字节
+一致不等于已验证 GPU 数值或性能，必须再构建、执行和比较完整报告。
+
+当前完整融合 level1 首测输出保持一致，但墙钟吞吐比原 level1 回测低
+2.58%，尚未通过性能门槛。trace 显示 GEMV 节省被新构建更慢的主 GEMVX
+kernel 抵消；先解决该 tactic 选择，避免把结构性 plugin 减少当作性能结论。
+level2/workspace1024 因明确 CUDA 分配失败退出，workspace512 另行验收。

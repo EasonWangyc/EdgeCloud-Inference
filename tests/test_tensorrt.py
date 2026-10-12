@@ -804,6 +804,20 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
         self.assertIn("768", llm)
         self.assertIn("--maxKVCacheCapacity", llm)
         self.assertNotIn("--maxKVCacheCapacity", visual)
+        isolated_llm, isolated_visual = build_commands(
+            edge_root=Path("/edge"),
+            onnx_root=Path("/onnx"),
+            engine_root=Path("/engine"),
+            max_batch_size=1,
+            max_input_len=768,
+            max_kv_cache_capacity=1024,
+            min_image_tokens=8,
+            max_image_tokens=2048,
+            max_image_tokens_per_image=2048,
+            llm_builder_path=Path("/isolated/llm_build"),
+        )
+        self.assertEqual(isolated_llm[0], "/isolated/llm_build")
+        self.assertEqual(isolated_visual[0], visual[0])
 
     def test_visual_timing_cache_bindings_are_component_specific(self) -> None:
         for level in (2, 3):
@@ -2741,11 +2755,19 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
 
             def report(*, e2e: float, decode: float, quality: float, memory: float) -> dict[str, object]:
                 return {
+                    "records": [{"case_id": "one", "workload_identity": "workload-a",
+                                 "input_tokens": 10, "raw_output": "{}", "assessment": {},
+                                 "output_tokens": 2, "decode_tokens": 1, "failure": None}],
+                    "environment_snapshot": {"hostname": "jetson", "machine": "aarch64",
+                                             "actual_power_mode": "15W", "measurement_mode": "serial",
+                                             "input_image_sha256": {"one": "a" * 64}},
                     "study_identity": {
                         "workload_identity": "workload-a",
                         "split": "test",
                         "power_mode": "15W_MODE_0",
                         "repetitions": 3,
+                        "client_concurrency": 1,
+                        "load_pattern": "closed_loop_workers",
                         "runtime_identity": {
                             "backend": "tensorrt_edge_llm",
                             "backend_revision": "edge-a",
