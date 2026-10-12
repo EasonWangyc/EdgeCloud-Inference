@@ -30,6 +30,8 @@ def compare_summaries(
     """计算 candidate 相对 baseline 的 trace/category/kernel 差异。"""
     _validate_summary(baseline, "baseline")
     _validate_summary(candidate, "candidate")
+    if baseline.get("classification_version") != candidate.get("classification_version"):
+        raise ValueError("kernel classification versions differ; re-summarize both raw traces")
 
     baseline_label = baseline.get("input", {}).get("label") or "baseline"
     candidate_label = candidate.get("input", {}).get("label") or "candidate"

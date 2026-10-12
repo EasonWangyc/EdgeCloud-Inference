@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+import math
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,9 @@ _IDENTITY_FIELDS = (
     "workload_identity",
     "split",
     "power_mode",
+    "client_concurrency",
+    "load_pattern",
+    "repetitions",
 )
 _RUNTIME_FIELDS = (
     "backend",
@@ -37,6 +43,8 @@ _QUALITY_FIELDS = (
 )
 _PERFORMANCE_FIELDS = (
     "tokens_per_second",
+    "wall_output_tokens_per_second",
+    "decode_tokens_per_second",
     "aggregate_output_tokens_per_end_to_end_second",
     "peak_memory_mb",
     "average_power_w",
@@ -84,27 +92,38 @@ def compare_study_reports(
         for stage in _STAGES
     }
     quality = {
-        field: _compare_scalar(baseline_quality.get(field), candidate_quality.get(field))
+        field: _compare_scalar(baseline_quality.get(field), candidate_quality.get(field), higher_is_better=True)
         for field in _QUALITY_FIELDS
     }
     performance = {
         field: _compare_scalar(
-            baseline_performance.get(field), candidate_performance.get(field)
+            baseline_performance.get(field), candidate_performance.get(field),
+            higher_is_better="tokens_per" in field,
         )
         for field in _PERFORMANCE_FIELDS
     }
     baseline_count = baseline_performance.get("backend_completed_sample_count")
     candidate_count = candidate_performance.get("backend_completed_sample_count")
+    records = compare_records(baseline.get("records"), candidate.get("records"))
+    environment = _compare_fields(
+        baseline.get("environment_snapshot") or {}, candidate.get("environment_snapshot") or {},
+        ("hostname", "machine", "actual_power_mode", "measurement_mode", "input_image_sha256"),
+    )
     return {
-        "schema_version": "parksight_tensorrt_study_comparison_v1",
+        "schema_version": "parksight_tensorrt_study_comparison_v2",
         "inputs": {
             "baseline": str(Path(baseline_path)),
             "candidate": str(Path(candidate_path)),
+            "baseline_sha256": hashlib.sha256(Path(baseline_path).read_bytes()).hexdigest(),
+            "candidate_sha256": hashlib.sha256(Path(candidate_path).read_bytes()).hexdigest(),
         },
         "match": {
             "identity": identity,
             "runtime": runtime,
-            "comparable": identity["comparable"] and runtime["comparable"],
+            "records": records,
+            "environment": environment,
+            "comparable": (identity["comparable"] and runtime["comparable"]
+                           and records["workload_comparable"] and environment["comparable"]),
         },
         "execution": {
             "baseline_repetitions": baseline_identity.get("repetitions"),
@@ -116,7 +135,9 @@ def compare_study_reports(
         },
         "quality": quality,
         "evidence_boundary": (
-            "This compares serialized StudyReport metrics only. It does not attribute a gain to "
+            "Comparable means serialized workload, runtime, environment and case/input coverage match; "
+            "exact_output_match is a separate observation. Neither proves engine weight provenance "
+            "or authorizes promotion. This does not attribute a gain to "
             "an operator, tactic, kernel, KV-cache layout, or CUDA Graph; use Engine Inspector "
             "and Nsight evidence for attribution. Missing fields remain unverified."
         ),
@@ -129,11 +150,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.output.exists():
+        parser.error("output already exists; use a fresh comparison path")
     result = compare_study_reports(args.baseline, args.candidate)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    with args.output.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(args.output)
     return 0
 
@@ -207,7 +229,7 @@ def _compare_summary(baseline: Any, candidate: Any) -> dict[str, Any]:
     return result
 
 
-def _compare_scalar(baseline: Any, candidate: Any) -> dict[str, Any]:
+def _compare_scalar(baseline: Any, candidate: Any, *, higher_is_better: bool = False) -> dict[str, Any]:
     if not _is_number(baseline) or not _is_number(candidate):
         return {
             "baseline": baseline,
@@ -217,20 +239,72 @@ def _compare_scalar(baseline: Any, candidate: Any) -> dict[str, Any]:
         }
     baseline_float = float(baseline)
     candidate_float = float(candidate)
+    improvement = (
+        (candidate_float / baseline_float - 1.0 if higher_is_better
+         else 1.0 - candidate_float / baseline_float)
+        if baseline_float > 0 else None
+    )
+    speedup = (
+        candidate_float / baseline_float if baseline_float > 0 else None
+    ) if higher_is_better else (
+        baseline_float / candidate_float if candidate_float > 0 else None
+    )
     return {
         "baseline": baseline_float,
         "candidate": candidate_float,
-        "improvement": (
-            1.0 - candidate_float / baseline_float if baseline_float > 0 else None
-        ),
-        "speedup": (
-            baseline_float / candidate_float if candidate_float > 0 else None
-        ),
+        "higher_is_better": higher_is_better,
+        "improvement": improvement,
+        "speedup": speedup,
     }
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def compare_records(baseline: Any, candidate: Any) -> dict[str, Any]:
+    """Compare repeated case coverage and inputs independently of generated outputs."""
+    fields = ("workload_identity", "input_tokens", "raw_output", "assessment",
+              "output_tokens", "decode_tokens", "failure")
+    result: dict[str, Any] = {"status": "unverified", "workload_comparable": False,
+                             "exact_output_match": False, "mismatches": {}, "missing_fields": []}
+    if not isinstance(baseline, list) or not isinstance(candidate, list) or not baseline or not candidate:
+        result["missing_fields"] = ["nonempty records"]
+        return result
+    if any(not isinstance(row, Mapping) or not isinstance(row.get("case_id"), str)
+           or not row["case_id"] for row in baseline + candidate):
+        raise ValueError("records must contain nonempty string case_id values")
+    coverage = [Counter(row["case_id"] for row in rows) for rows in (baseline, candidate)]
+    result["case_counts"] = {"baseline": dict(coverage[0]), "candidate": dict(coverage[1])}
+    if coverage[0] != coverage[1]:
+        result["status"] = "mismatch"
+        result["mismatches"] = {"case_coverage": result["case_counts"]}
+        return result
+    # Multisets retain repetitions while allowing harmless record reordering.
+    for field in fields:
+        missing = any(field not in row or (row[field] is None and field != "failure")
+                      for row in baseline + candidate)
+        if missing:
+            result["missing_fields"].append(field)
+            continue
+        counts = [Counter((row["case_id"], json.dumps(row[field], sort_keys=True, ensure_ascii=False))
+                          for row in rows) for rows in (baseline, candidate)]
+        if counts[0] != counts[1]:
+            result["mismatches"][field] = sorted({case for case, _ in (counts[0] - counts[1]) | (counts[1] - counts[0])})
+    result["workload_comparable"] = all(
+        field not in result["missing_fields"] and field not in result["mismatches"]
+        for field in ("workload_identity", "input_tokens")
+    )
+    result["exact_output_match"] = not result["missing_fields"] and not result["mismatches"]
+    if result["exact_output_match"]:
+        complete = [Counter(json.dumps({key: row[key] for key in ("case_id", *fields)},
+                                       sort_keys=True, ensure_ascii=False) for row in rows)
+                    for rows in (baseline, candidate)]
+        if complete[0] != complete[1]:
+            result["mismatches"]["record_content"] = "field association differs across repetitions"
+            result["exact_output_match"] = False
+    result["status"] = "mismatch" if result["mismatches"] else ("unverified" if result["missing_fields"] else "matched")
+    return result
 
 
 if __name__ == "__main__":

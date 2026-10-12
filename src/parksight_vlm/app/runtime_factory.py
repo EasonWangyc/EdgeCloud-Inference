@@ -88,6 +88,7 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
                 "timeout_seconds",
                 "stream_responses",
                 "reuse_http_connection",
+                "image_preprocessing",
             },
             "tensorrt_edge_llm_http",
         )
@@ -103,12 +104,16 @@ def build_runtime(config: RuntimeConfig, *, data_root: Path) -> RiskRuntime:
             raise AppConfigError(
                 "runtime.options.reuse_http_connection must be a boolean"
             )
+        image_preprocessing = _option_text(config.options, "image_preprocessing", "source")
+        if image_preprocessing not in ("source", "workload_resize"):
+            raise AppConfigError("runtime.options.image_preprocessing must be source or workload_resize")
         backend = EdgeLlmHttpBackend(
             base_url=_option_text(config.options, "base_url", "http://127.0.0.1:8000"),
             model_name=_option_text(config.options, "model_name", "local"),
             timeout_seconds=float(timeout_seconds),
             stream_responses=stream_responses,
             reuse_http_connection=reuse_http_connection,
+            image_preprocessing=image_preprocessing,
         )
         return EdgeLlmRuntime(
             data_root=data_root,

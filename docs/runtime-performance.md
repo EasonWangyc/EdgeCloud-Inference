@@ -66,6 +66,163 @@ token、115 次语言模型 forward，decode 计数为 114，阶段总时间为 
 `reports/vllm-wsl/failure-metrics-20261008/recomputed_metrics.json`，
 原始报告不回写。未记录的墙钟窗口、input usage 和 stream arrival 保持缺失。
 
+## TensorRT 低层 benchmark 指标
+
+Edge-LLM HTTP Adapter 默认 `image_preprocessing="source"`，保留已有实验的原图路径。
+新板端配置 `configs/studies/jetson_edgellm_fp16_workload_resize_ps20_pilot.json`
+显式使用 `workload_resize`：客户端按冻结尺寸生成 RGB bicubic PNG，直到 HTTP
+响应结束才删除临时目录。图片解码、缩放、编码和临时文件准备纳入
+`preprocess_ms`、客户端总 TTFT 及调用方端到端计时；HTTP TTFT 和服务端阶段时间
+保持原来的边界。请求失败、PNG 写入失败也清理文件并丢弃持久连接。
+
+路径协议要求客户端与 server 能访问同一文件系统及临时目录；这份配置用于
+Jetson 同机运行。SSH 端口转发不提供共享文件系统，不能直接把 WSL 的临时路径
+传给 Jetson。2026-10-08 离线核验 20 张 PS20 图片，实际 Pillow 生成的 PNG
+与 vLLM `workload_resize` 上传图片逐像素一致，原图不变且临时目录全部清理。
+原始结果见 `reports/jetson-readiness-20261008/image_preprocessing_verification.json`；
+HTTP 调用被 mock，没有执行板端推理，也未验证 TensorRT 内部 patch/tensor 布局。
+
+`scripts/run_edgellm_benchmark.py` 将服务端明确返回的 decode token 数写入
+JSONL 的可选 `decode_tokens`。汇总只配对同一条 completed 记录中的 token 数
+和耗时；一条记录只有 token、另一条只有时间时，不计算两者之间的速率。
+总体与每个 repetition 都保存参与速率计算的 `*_sample_count`。
+
+低层 JSONL 的历史 `decode_tokens_per_second` 仍表示完整 output token 数除以
+decode 时间；新增 `measured_decode_tokens_per_second` 使用明确的 decode 计数。
+这与 StudyReport 的严格 `decode_tokens_per_second` 口径对应。未提供计数的旧
+JSONL 和直接 C++ benchmark 不自动推定 `N-1`，新字段保持 null。部分字段缺失时，
+速率仅覆盖有完整配对的请求，不能解释为整个 workload 的吞吐。
+
+2026-10-08 板端 server 源码检查发现流式异常会返回
+`finish_reason="error"` 后继续发送 `[DONE]`。HTTP Adapter 将这种响应记为
+运行时失败，即使已经收到符合 schema 的文本也不计为成功。当前 SSE 路径未返回
+usage 或阶段计时；非流式 `prompt_tokens=0` 是 server 占位值，不能当作真实输入
+token 数。补齐服务端测量之前，仅已有客户端 TTFT、文本片段到达和端到端时延
+具备可采集路径，阶段速率不补估。
+
+### Edge-LLM 可选流式 usage
+
+新增 server 启动选项 `--stream-usage` 在进程内包装已核验的
+`experimental.server.api_server._generate_stream_sse`。每个请求独立汇总
+`StreamDelta.token_ids`，在 `[DONE]` 前发送空 choices 的 usage 事件；它包括
+未显示为文本的特殊 token，不是字符数或 SSE 事件数。启动时显式开启后，该进程的
+流式响应均可附带 usage，不依赖请求的 `stream_options`。默认关闭，现有板端源码
+和生成参数不改写；已经包含 usage 的响应原样保留。
+
+缺少有效 token IDs、没有观察到任何 delta 或 error 结束时，不补估 token 数。
+扩展不返回占位 prompt 计数，也不从 completion 数推定 decode 计数。初始化时
+检查 generator 签名，runtime metadata 记录开关、包装代码 SHA-256 和计数边界。
+普通与工具 SSE 分支共用的 `generate_stream` 调用均可经过包装；当前已验证普通
+单图 SSE 的离线集成、板端 native GPU 诊断和真实 HTTP 请求，尚未验收工具调用。
+
+2026-10-08 使用采集的 Jetson SSE 函数、模拟 native delta 和真实客户端解析器，
+验证两个文本事件可包含四个 token IDs，得到 completion_tokens=4，input/decode
+计数和 decode 时间保持 null。证据见
+`reports/jetson-readiness-20261008/stream_usage_verification.json` 和源码快照；
+该离线结果不作为 GPU 吞吐证据。
+
+2026-10-09 实际 Jetson INT4 HTTP 单图返回 completion_tokens=95、非空文本事件
+94 个，严格 JSON 有效；HTTP TTFT 671.79 ms、含请求准备的总 TTFT 922.53 ms，
+HTTP 往返 12.688 秒，客户端 TPOT 估计 126.44 ms。候选绑定通过显式目录和哈希
+选择，服务 metadata 记录实际模块身份。该路径尚未回传 prompt/decode 计数或
+阶段时间，这些字段保持 null。证据见
+`reports/jetson-readiness-20261009/http_diagnostic.json`；这是单图链路验收，
+没有预热、重复测量或稳定性结论，不与 native profiling 单图计算加速比。
+
+### Edge-LLM native Timer 桥接准备
+
+已核验的 C++ Timer 记录 CUDA event 时间，现有 Python binding 尚未暴露其数据。
+`scripts/prepare_edgellm_timing_binding.py` 生成绑定源码身份的补丁，准备导出每个
+原始 stage ID 的 `total_gpu_time_ms` 和 `run_count`。这些值是累计值，不是逐请求
+报告；必须在 worker 全部停止执行时读取，且开启实际 profiling 才可能有数据。
+在独占、串行验收中核对快照、stage 名称及包围范围后，才可映射为报告阶段字段。
+
+2026-10-08 已对采集的 Jetson CRLF 源码验证补丁可应用并保持其他内容与行尾；
+随后已完成独立 binding 编译和新进程导入；默认 profiling 为 false，初始快照为空。
+初次导入未执行模型；后续单图 CUDA event 验收结果如下。SSE 阶段回传尚未接入，
+现有研究报告中的阶段指标仍为 null。
+补丁、准备记录和验证结果保存在
+`reports/jetson-readiness-20261008/native_stage_timing_binding.patch` 及相关 JSON。
+
+板端单图诊断入口为 `scripts/run_edgellm_native_probe.py`，默认不执行模型；
+显式执行时保存候选绑定、engine、workload 和输入身份，以及初始化失败事实。
+其流式 TTFT 不包含 HTTP 传输，不能填写 HTTP TTFT 字段。FP16 本轮在视觉 engine
+加载阶段 OOM，没有生成结果；不补填 token 数或阶段时间。已有 INT4 引擎可完成
+初始化；upstream metrics 的继承成员绑定错误已在独立候选绑定中修复。
+各次失败与成功初始化的边界见 [Jetson 就绪记录](jetson-readiness.md)。
+
+2026-10-09 已有 INT4 产物完成一次带 profiling 的 native 单图诊断：SSE usage 与
+native generated 计数均为 95，computed/reused prompt 为 570/0；vision 和
+prefill 各 1 次，分别 203.98/425.85 ms，`llm_generation` 94 次共 12001.78 ms。
+已核验的 vanilla decoder 每次 decode step 包含一个该 stage；prefill 产生首个
+token，因此本次 94 次 decode 与后续 token 数吻合，对应 7.832 decode tokens/s。
+这条诊断不推广到 batch、speculative decoding、并发请求或其他 engine。
+首文本延迟 659.54 ms、流总耗时 12.670 秒仅为进程内 SSE 路径，不含 HTTP。
+严格 JSON 有效不代表风险判断正确；本阶段保留输出，不调整 prompt 或模型。
+完整记录见 `reports/jetson-readiness-20261008/native_int4_diagnostic.json`。
+
+### HTTP 串行阶段测量
+
+`serve_edgellm.py --serial-stage-metrics` 使用候选 binding 的累计快照差分，将
+实际字段写入最终 SSE usage 事件的 `timings_ms` 和 `usage.prompt_tokens` /
+`usage.decode_tokens`。完整前后计数及 Timer 快照保存在同一事件的
+`parksight_measurement`。默认关闭；开启后 batch=1、无 draft/scheduler，所有
+HTTP 推理响应串行执行，activity guard 确认快照时没有执行中的 worker 或仍在
+准备/清理中的流式 generator。
+这是带 profiling 的研究模式，不能替代默认并发吞吐 benchmark。
+
+窗口必须恰好含一次 prefill/generation，native generated 数与 SSE delta ID 数
+相等，实际 decode stage 次数与后续 token 数相符。计数回退、阶段不匹配或
+profiling 关闭时不填阶段值，并在扩展中记录 unavailable 原因；不从 N-1 单独
+推定 decode 数。单 token 生成没有 decode stage 时间时保持缺失。失去 worker
+静止条件后禁止继续推理，避免读取或复用仍在变动的全局 Timer。
+
+2026-10-09 真实 HTTP 单图验证输入/输出/decode 计数为 570/95/94，vision、
+prefill、decode 为 166.30/426.48/12020.47 ms，HTTP TTFT 629.84 ms。
+接着两个请求同时提交，实际产生两个首尾相接且各含一次 native generation 的
+窗口，分别为 75/74 和 95/94 个 output/decode token。先执行请求 TTFT 655.77 ms，
+排队请求 TTFT 10681.44 ms；这验证串行准入及数据归因，不说明并发加速。
+两轮均严格 JSON 有效，测试服务结束后关闭。原始证据见
+`reports/jetson-readiness-20261009/http_stage_diagnostic.json` 和
+`http_stage_concurrency_diagnostic.json`，不回写之前未插桩的结果。
+
+### 冻结 PS20 串行阶段 study
+
+2026-10-09 使用 `configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，
+已有 INT4 i768/k1024 LLM 与 FP16 视觉产物、候选 binding、15W mode 0，执行
+标准 StudyRunner：20 张图片各一次、448×448 RGB PNG、greedy、最多 256 token，
+模型已加载且无独立预热。保留 profiling 与每请求 SSE 落盘开销，不作为未插桩基线。
+模型 revision 为配置声明；当前 engine 哈希尚未与历史导出记录绑定。
+
+20/20 后端完成并通过严格 JSON，失败汇总为空；三个 CUDA 阶段均覆盖 20 条。
+每条 native/SSE 输出计数吻合，累计窗口首尾相接，报告字段与原始事件逐条核对。
+输入/输出/decode 总数为 11400/1550/1530，正式窗口 211.303 秒，输出吞吐
+7.335 tokens/s、0.09465 requests/s，严格 decode 吞吐 7.824 tokens/s。
+
+| 指标 | p50 | p90 | p99 |
+| --- | --- | --- | --- |
+| 客户端预处理（ms） | 203.87 | 212.48 | 241.75 |
+| 视觉编码 CUDA event（ms） | 114.47 | 114.76 | 179.98 |
+| Prefill CUDA event（ms） | 425.67 | 426.15 | 426.24 |
+| Decode CUDA event（ms） | 9711.85 | 10560.26 | 11873.11 |
+| HTTP TTFT（ms） | 567.71 | 570.70 | 641.45 |
+| 含客户端准备的 TTFT（ms） | 771.14 | 782.82 | 882.50 |
+| 端到端（秒） | 10.489 | 11.343 | 12.769 |
+
+仅 20 个不同输入各一次，p99 受样本量限制，不支持长期尾延迟结论。模型冷启动、
+服务端整体 E2E 和 model_generate 时间仍未知。启动至退出的 439 条 500 ms
+设备遥测采样记录 RAM/swap 峰值 5136/1601 MB、GPU 温度峰值 52.437°C、输入
+功耗均值 9.539 W；该窗口包括初始化，不能填入逐请求 ResourceSnapshot。
+
+风险等级准确率 35%、事件 micro-F1 0、语义一致率 10%；严格 JSON 有效不代表
+任务效果正确。本轮不调整模型、prompt、标注或阈值，也不与跨设备 vLLM 计算加速比。
+
+本地证据位于 `reports/jetson-readiness-20261009/`：`ps20_stage_study.json` 保存
+完整报告、20 条原始 SSE trace、measurement gate、代码/产物/图片身份与日志；
+提取的 `ps20_stage_report.json` 和 `ps20_stage_runtime_summary.json` 便于复核。
+首次隔离目录的图片符号链接被 data_root 校验拒绝，20 条 input_error 保存为
+`ps20_input_failure.json`；修正为复制冻结图片后才执行了这轮真实推理。
+
 ## vLLM 服务端指标
 
 在本机服务已启动、没有其他请求流量时运行：
@@ -438,3 +595,161 @@ sidecar、配置前后快照、日志、`server_profiles.json`、
 返回 2，即使推理本身成功。后续 GPU CSV 同时采集 SM/显存时钟与功耗、
 温度及降频原因；字段已在本机驱动核对。旧 CSV 不补填新字段，采样仍为
 设备级每秒一次；未受控功耗、系统负载和热状态不能由这些字段自动消除。
+
+## Jetson INT4 显式贪心参数复验（2026-10-12）
+
+Edge HTTP Adapter 显式发送 temperature=0、top_k=1、top_p=1.0，避免 native
+逐 token 重复归一化和告警。冻结 PS20 完成 20/20 后端与严格 JSON 校验，
+告警为零；与 2026-10-09 的 20 条原始输出和 token 数逐条一致。
+
+| 指标 | 本轮结果 |
+| --- | --- |
+| HTTP TTFT p50 | 567.40 ms |
+| 客户端总 TTFT p50（含预处理） | 769.96 ms |
+| E2E p50 / p90 / p99 | 10.488 / 11.340 / 12.750 s |
+| 墙钟输出吞吐 | 7.338 tokens/s |
+| 严格 decode 吞吐 | 7.825 tokens/s |
+| input / output / decode tokens | 11400 / 1550 / 1530 |
+
+本轮为 15W、串行、已加载服务、native profiling 与 SSE 持久化开启的 pilot，
+没有独立预热。跨天结果接近，不作为稳定加速结论。质量指标仍为风险等级准确率
+0.35、事件 micro-F1 0、语义一致率 0.10；此次改动只验证框架行为。
+模型 revision 与历史导出尚未绑定，不与服务器 vLLM 数据计算板端加速比。
+完整配置、证据路径、哈希与比较范围见 [Jetson 验收记录](jetson-readiness.md)。
+
+## Token 汇总的缺失测量
+
+`performance_metrics.token_counts` 中 input/output/decode 总数表示已有测量的和，
+相邻的 `*_usage_record_count` 表示覆盖条数。完全没有测量时总数为 `null`，
+真实测得零 token 时仍为 `0`；部分记录有测量时只汇总已测值，不能解释为
+整个工作负载的完整 token 总数。墙钟输出吞吐仍要求全部完成记录都有输出
+计数，严格 decode 吞吐只使用计数与阶段耗时同时存在的记录。
+
+旧报告不覆盖。2026-10-12 profiling 关闭 study 的原始记录中 input/decode
+均未知，旧版汇总曾显示零；依据原始 20 条记录重新计算的结果单独保存在
+`reports/jetson-readiness-20261012/profiling_off_metrics_corrected.json`，
+input/decode 总数为 null、output 总数为 1550，其余性能字段逐项保持一致。
+
+## Jetson 阶段 profiling 开销复验
+
+2026-10-12 同机 15W 冻结 PS20 开启 / 关闭 / 开启，各 20 条成功；关闭与
+复验的全部输出及输出 token 数和前测一致。HTTP TTFT p50 分别为
+567.40 / 567.23 / 565.96 ms，E2E p50 为 10.488 / 10.488 / 10.486 s，
+墙钟输出吞吐为 7.3378 / 7.3389 / 7.3361 tokens/s，未显示稳定加速。
+
+关闭档保留 SSE 计数、事件记录及 profiling 状态审计，20 次均确认状态关闭、
+CUDA timer 未增长；阶段耗时和 input/decode 计数为空。此结果只隔离阶段
+profiling，不表示完全无插桩。新服务进程到健康检查成功的复验值为 10.078 s，
+不等同于系统冷启动。证据、设备遥测、旧摘要文字与零值修正的说明见
+[验收记录](jetson-readiness.md)。
+
+## Jetson Decode Graph 捕获开关复验
+
+2026-10-12 固定 INT4 engine、工作负载和 15W 模式，Graph 捕获开启 / 关闭 /
+开启各 20 条成功，所有输出与 token 数一致。墙钟吞吐为
+7.3361 / 7.2096 / 7.3383 tokens/s，decode p50 为 9.712 / 9.877 / 9.707 s。
+本轮开启组约快 1.8%，保留默认捕获；不作为跨模型、固定时钟或长时间 soak
+结论。阶段 profiling、SSE 记录仍开启，无独立预热。
+
+关闭开关通过源码哈希绑定补丁应用于独立 Python 副本；runtime metadata、
+真实导入路径和 native 捕获日志共同核验。INFO 关闭提示未输出，完整来源及
+原始证据见 [Jetson 验收记录](jetson-readiness.md)。Graph 捕获不等同于直接
+观测 replay，后续需 CUDA trace 定位实际 decode 路径。
+
+## Nsight GPU / API 归因口径
+
+Nsight CSV 汇总使用 `parksight_cuda_kernel_names_v2`，新增 FP16 GEMM 分类及
+Edge-LLM INT4 WoQ GEMV 符号识别，避免 GEMV 被漏入 other_kernel。报告记录
+分类版本和执行脚本哈希；新旧分类不能直接比较，须用同版本重算两份原始 CSV。
+API trace 不能当作 GPU trace 输入，NaN/Inf duration 被拒绝。
+
+2026-10-12 单图显式 capture range 中直接观测 94 次 Graph launch 和
+42488 条关联 kernel 事件，与 native 94 次 decode stage 对应。一个 FP16
+GEMM 占全部 kernel event 时长的 83.55%，优先定位其模型算子与 tactic。
+事件时长之和不等于 wall time；同步 API 的 host 等待与 GPU 工作重叠，不能
+重复计时。单图、有 Nsight 开销的诊断不替代冻结 PS20 性能结论，详细证据见
+[Jetson 验收记录](jetson-readiness.md)。
+
+## Jetson Builder level1 候选
+
+2026-10-12 冻结 PS20 在 level0 / level1 / level0 / level1 顺序下，墙钟输出
+吞吐为 7.3383 / 27.5918 / 7.3376 / 27.5744 tokens/s，端到端 p50 为
+10.483 / 2.784 / 10.486 / 2.787 s。候选两次约为 level0 的 3.76 倍；全部
+20 条 raw output、assessment、workload identity 和 token 计数一致。
+这是同板、batch=1、Graph 与阶段计时开启的 pilot 结果，无独立预热，不能
+推为并发或长期稳定性结论。HTTP TTFT 不包含客户端预处理。
+
+候选复用相同 visual engine 和 native binding；默认 engine 保持原配置。
+历史候选缺少导出权重哈希绑定，来源等价尚待补齐；风险准确率 0.35、事件
+micro-F1 0 未改变。引擎身份、完整报告 SHA-256、复验与 ONNX 输出投影证据
+见 [Jetson 验收记录](jetson-readiness.md#builder-level1-候选全流程复验2026-10-12)。
+
+## StudyReport 比较规则
+
+`compare_tensorrt_study_reports.py` 输出 v2 schema。吞吐与质量按越高越好计算，
+时延、内存、功耗与温度按越低越好计算；`speedup` 对吞吐为候选/基线，对
+时延为基线/候选。缺失或非有限值没有加速比，不使用旧 v1 吞吐方向解释结果。
+
+`match.comparable` 要求冻结 workload、runtime、并发/负载模式、重复次数、
+同机测量环境、输入图片哈希和逐 case 输入计数匹配。重复记录按多重集合
+比较，允许记录重新排序，保留重复次数。缺失记录或环境时标为未核验。
+`match.records.exact_output_match` 单独检查原始输出、assessment、输入/输出/
+decode token 和 failure；未知 token 不等于已验证一致。输出变化列出 case ID，
+不隐藏质量回归。可比和输出一致均不证明 engine 权重来源，也不是晋级授权。
+
+将完整证据包里的 StudyReport 提取为两个 JSON 文件后执行：
+
+```bash
+python scripts/compare_tensorrt_study_reports.py \
+  --baseline reports/jetson-readiness-20261012/level_comparison_baseline_report.json \
+  --candidate reports/jetson-readiness-20261012/level_comparison_candidate_report.json \
+  --output reports/jetson-readiness-20261012/level_comparison-review.json
+```
+
+输出使用新路径，保存两份输入文件的 SHA-256。当前实测重算结果为可比、
+逐样本完全一致、墙钟吞吐加速比 3.7576。
+
+## Level1 GPU 剩余瓶颈
+
+单图 generation trace 中，主 FP16 GEMM 从平均 110.55 ms 降至 10.36 ms；
+INT4 WoQ GEMV 总时长仍约 1335 ms，占 level1 全部 kernel event 时长的
+43.79%，高于主 GEMM 的 32.28%。这将后续优化重点移到 INT4 GEMV，而非
+仅有数毫秒总时长的 sampling。精确 layer attribution 尚未闭环。
+
+两组均观测到 94 次成功 Graph replay，每次 452 条关联 kernel 事件，输出
+一致。汇总分类采用 v3，两份 CSV 必须重算后比较。复查关联的命令为：
+
+```bash
+python scripts/analyze_edgellm_nsight_replay.py \
+  --sqlite reports/jetson-readiness-20261012/nsight-level1-artifacts/generation.sqlite \
+  --probe reports/jetson-readiness-20261012/nsight-level1-artifacts/probe.json \
+  --output reports/jetson-readiness-20261012/replay-review.json
+```
+
+该工具只读 SQLite；当前支持实测 Nsight Systems 2024.5 的 CUPTI global-ID
+编码，不将结果外推到其他 schema。native counter 为累计值，使用前后差值；
+初始 timer 为空仅在原生 generation counter 明确为零时视作首次记录。
+GPU event 总和和带 profiler 开销的 native wall 均不能替代 PS20 性能结果。
+
+## 完整投影融合的首测与回测
+
+相同 PS20、batch=1、15W、Graph 和阶段计时下，QKV＋gate/up 融合的墙钟
+吞吐为 26.8691 tokens/s、端到端 p50 2.854 s；原 level1 回测为
+27.5812 tokens/s、2.786 s。所有输出、assessment、token 与输入均匹配。
+完整融合首测退化约 2.58%，当前 engine 不晋级。
+
+Nsight 中每次 replay 的 kernel 数 452→368，INT4 GEMV 总 event 时长减少
+4.62%，但此构建的主矩阵 kernel 改为 GEMVX，平均 12.03 ms，高于原
+Ampere half GEMM 的 10.36 ms，抵消了融合收益。kernel 数减少与局部耗时
+改善都不能代替端到端验收。回测与首测跨运行时段，未固定 GPU 时钟。
+
+汇总分类升级为 `parksight_cuda_kernel_names_v4`，将明确含
+`gemvx_f16f16_` 的符号单列为 `fp16_gemv`，不将其误报为 other_kernel 或
+INT4 GEMV。两组 CSV 均重算 v4 后比较，旧摘要不覆盖。具体 layer 归因
+仍需足够详细的 engine inspector 与 trace 共同核对。
+
+level2/workspace1024 构建失败的日志含明确 CUDA 分配失败，随后报告无可用
+tactic；不能将最后一条消息单独解释为算子不支持。engine inspector 使用
+只读 mmap，减少 Python 整份 engine 的临时副本；它不消除 TensorRT 自身的
+GPU 权重和上下文占用。完整证据与后续 workspace512 试验见
+[验收记录](jetson-readiness.md#qkv-与-gateup-融合候选2026-10-12)。

@@ -139,7 +139,7 @@ class PerformanceMetrics:
     peak_temperature_c: float | None
     first_request_ms: float | None = None
     stream_chunk_interval_ms: PercentileSummary | None = None
-    token_counts: Mapping[str, int] = field(default_factory=dict)
+    token_counts: Mapping[str, int | None] = field(default_factory=dict)
     measurement_wall_seconds: float | None = None
     completed_requests_per_second: float | None = None
     wall_output_tokens_per_second: float | None = None

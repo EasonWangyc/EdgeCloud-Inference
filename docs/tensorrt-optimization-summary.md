@@ -5,9 +5,18 @@
 
 ## 当前状态
 
-当前正式参考为 TensorRT Edge-LLM INT4 level 0 engine；level 1 为已完成性能复验的候选。
+当前正式参考为 TensorRT Edge-LLM INT4 level 0 engine；level 1 和新融合 engine 为已完成性能复验的候选。
 本轮优化变量集中在 builder tactic、CUDA Graph、INT4 GEMV/GEMM tile、`lm_head` GEMM 和
 低层 benchmark，不把量化、LoRA、数据标注或 workload 作为变量。
+
+2026-10-12 的冻结 PS20 同机测试中，旧 level1 的紧邻对照为 27.558 output tokens/s，
+INT4 Q/K/V 与 gate/up 融合、详细 profiling 重建的 engine 两次为 28.122 和
+28.178 output tokens/s；20 图输出逐样本完全一致。后一组 decode p50 为
+2059.90 ms，对照为 2110.59 ms。Nsight 显示 INT4 GPU event 合计缩短约
+67.08 ms/95 forward；`lm_head` 保持 Ampere GEMM tactic。未开启详细 profiling 的
+首次融合构建曾选择更慢的 GEMVX，20 图吞吐仅 26.869，已否决。详见
+[Jetson 实验证据](jetson-readiness.md)。timing cache 复用将同图构建从 113.17 秒
+缩短到 35.37 秒，不作为推理吞吐收益。
 
 ## P0-P3 执行顺序与验收边界
 

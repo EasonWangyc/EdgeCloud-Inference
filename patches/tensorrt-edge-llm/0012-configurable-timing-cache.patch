@@ -1,0 +1,97 @@
+diff --git a/cpp/builder/builderUtils.cpp b/cpp/builder/builderUtils.cpp
+--- a/cpp/builder/builderUtils.cpp
++++ b/cpp/builder/builderUtils.cpp
+@@ -24,4 +24,5 @@
+ #include <string>
++#include <vector>
+ 
+ namespace trt_edgellm
+ {
+@@ -306,6 +307,58 @@ bool buildAndSerializeEngine(nvinfer1::IBuilder* builder, nvinfer1::INetworkDefinition* network,
+         return false;
+     }
+ 
++    std::unique_ptr<nvinfer1::ITimingCache> timingCache;
++    std::filesystem::path timingCachePath;
++    if (char const* value = std::getenv("EDGELLM_TIMING_CACHE_PATH");
++        value != nullptr && *value != '\0')
++    {
++        timingCachePath = value;
++        std::vector<char> serializedCache;
++        if (std::filesystem::exists(timingCachePath))
++        {
++            std::ifstream timingCacheFile(timingCachePath, std::ios::binary);
++            if (!timingCacheFile)
++            {
++                LOG_ERROR("Failed to open TensorRT timing cache: %s", value);
++                return false;
++            }
++            timingCacheFile.seekg(0, std::ios::end);
++            std::streamoff const size = timingCacheFile.tellg();
++            if (size < 0)
++            {
++                LOG_ERROR("Failed to determine TensorRT timing cache size: %s", value);
++                return false;
++            }
++            serializedCache.resize(static_cast<size_t>(size));
++            timingCacheFile.seekg(0, std::ios::beg);
++            if (size > 0)
++            {
++                timingCacheFile.read(serializedCache.data(), size);
++                if (!timingCacheFile)
++                {
++                    LOG_ERROR("Failed to read TensorRT timing cache: %s", value);
++                    return false;
++                }
++            }
++            LOG_INFO("Loading TensorRT timing cache: %s (%zu bytes)", value, serializedCache.size());
++        }
++        else
++        {
++            LOG_INFO("Creating empty TensorRT timing cache: %s", value);
++        }
++        timingCache.reset(config->createTimingCache(serializedCache.data(), serializedCache.size()));
++        if (!timingCache)
++        {
++            LOG_ERROR("Failed to create TensorRT timing cache: %s", value);
++            return false;
++        }
++        if (!config->setTimingCache(*timingCache, false))
++        {
++            LOG_ERROR("TensorRT rejected timing cache for the current builder/device: %s", value);
++            return false;
++        }
++    }
++
+     // Build serialized network
+     auto engine = std::unique_ptr<nvinfer1::IHostMemory>(builder->buildSerializedNetwork(*network, *config));
+     if (!engine)
+@@ -347,6 +399,28 @@ bool buildAndSerializeEngine(nvinfer1::IBuilder* builder, nvinfer1::INetworkDefinition* network,
+         return false;
+     }
+ 
++    if (timingCache)
++    {
++        auto serializedCache = std::unique_ptr<nvinfer1::IHostMemory>(timingCache->serialize());
++        if (!serializedCache)
++        {
++            LOG_ERROR("Failed to serialize TensorRT timing cache: %s", timingCachePath.c_str());
++            return false;
++        }
++        std::ofstream timingCacheFile(timingCachePath, std::ios::binary | std::ios::trunc);
++        if (!timingCacheFile)
++        {
++            LOG_ERROR("Failed to open TensorRT timing cache for writing: %s", timingCachePath.c_str());
++            return false;
++        }
++        timingCacheFile.write(static_cast<char const*>(serializedCache->data()), serializedCache->size());
++        if (!timingCacheFile)
++        {
++            LOG_ERROR("Failed to write TensorRT timing cache: %s", timingCachePath.c_str());
++            return false;
++        }
++        LOG_INFO("TensorRT timing cache saved to %s (%zu bytes)", timingCachePath.c_str(), serializedCache->size());
++    }
+     LOG_INFO("Engine saved to %s", engineFilePath.c_str());
+     return true;
+ }

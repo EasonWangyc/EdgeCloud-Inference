@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -244,6 +247,7 @@ class DeploymentTests(unittest.TestCase):
                         / "jetson_orin_nano_int4_gemv_runtime_v1.json"
                     ),
                     runtime_variant_id="block512_n2",
+                    stream_usage=True,
                 )
 
         self.assertEqual(metadata["engines"]["llm"]["size_bytes"], len(b"llm-engine"))
@@ -267,6 +271,11 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(metadata["options"]["int4_gemv_block_size"], "512")
         self.assertEqual(metadata["environment"]["EDGELLM_INT4_GEMV_BLOCK_SIZE"], "512")
         self.assertEqual(metadata["runtime_tuning"]["variant_id"], "block512_n2")
+        self.assertTrue(metadata["options"]["stream_usage"])
+        extension_path = Path(__file__).resolve().parents[1] / "src/parksight_vlm/inference/edge_server_metrics.py"
+        self.assertEqual(metadata["stream_usage_extension"]["source"]["sha256"],
+                         hashlib.sha256(extension_path.read_bytes()).hexdigest())
+        self.assertIn("decode_ms", metadata["stream_usage_extension"]["unknown_fields"])
         self.assertTrue(metadata["runtime_tuning"]["config_path"].endswith("jetson_orin_nano_int4_gemv_runtime_v1.json"))
 
     def test_runtime_metadata_binds_patch_hashes(self) -> None:
@@ -657,6 +666,112 @@ class DeploymentTests(unittest.TestCase):
             },
         )
         self.assertEqual(calls["serve"], {"host": "127.0.0.1", "port": 8000})
+
+    def test_server_installs_usage_extension_only_when_requested(self) -> None:
+        api = SimpleNamespace(_generate_stream_sse=lambda llm_instance, response_id: iter(()))
+        original = api._generate_stream_sse
+        calls = []
+        class FakeLlm:
+            def __init__(self, **kwargs):
+                calls.append(bool(getattr(api._generate_stream_sse, "_parksight_stream_usage", False)))
+            def serve(self, **kwargs):
+                pass
+        server = ModuleType("experimental.server")
+        server.LLM = FakeLlm
+        server.api_server = api
+        with patch.dict("sys.modules", {
+            "experimental": ModuleType("experimental"), "experimental.server": server,
+            "uvicorn": ModuleType("uvicorn"),
+        }):
+            serve_prebuilt_engines(engine_root=Path("/work/engines"), host="127.0.0.1", port=8000)
+            self.assertIs(api._generate_stream_sse, original)
+            serve_prebuilt_engines(engine_root=Path("/work/engines"), host="127.0.0.1", port=8000,
+                                  stream_usage=True)
+        self.assertEqual(calls, [False, True])
+
+    def test_server_selects_candidate_before_constructor_and_restores_upstream_loader(self):
+        original = lambda: "old binding"
+        runtime = object()
+        calls = []
+        engine = SimpleNamespace(_import_runtime=original)
+        class FakeLlm:
+            def __init__(self, **kwargs):
+                calls.append(engine._import_runtime())
+            def serve(self, **kwargs):
+                self_outer.assertIs(engine._import_runtime, original)
+        self_outer = self
+        engine.LLM = FakeLlm
+        server = ModuleType("experimental.server")
+        server.LLM = FakeLlm
+        server.engine = engine
+        with patch.dict("sys.modules", {
+            "experimental": ModuleType("experimental"), "experimental.server": server,
+            "uvicorn": ModuleType("uvicorn"),
+        }), patch("parksight_vlm.inference.edge_native.load_native_binding", return_value=runtime):
+            serve_prebuilt_engines(engine_root=Path("/work/engines"), host="127.0.0.1", port=8000,
+                                  native_binding_directory=Path("/candidate"), native_binding_sha256="0" * 64)
+        self.assertEqual(calls, [runtime])
+
+    def test_check_only_validates_candidate_identity_without_native_import(self):
+        from scripts.serve_edgellm import main
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("llm/llm.engine", "visual/visual.engine"):
+                p = root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"engine")
+            binding = root / "binding"
+            binding.mkdir()
+            module = binding / "_edgellm_runtime.so"
+            module.write_bytes(b"candidate")
+            sha = hashlib.sha256(b"candidate").hexdigest()
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {}, clear=True), contextlib.redirect_stdout(stdout), \
+                 patch("parksight_vlm.inference.edge_native.load_native_binding", side_effect=AssertionError("GPU import")):
+                rc = main(["--engine-root", str(root), "--check-only",
+                           "--native-binding-directory", str(binding), "--native-binding-sha256", sha])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["native_binding_override"],
+                             {"path": str(module), "sha256": sha})
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                main(["--engine-root", str(root), "--check-only", "--native-binding-directory", str(binding)])
+
+    def test_serial_mode_disables_profiling_during_construction_and_after_server_failure(self):
+        from tests.inference.test_edge_stage_metrics import FakeNative
+        runtime = FakeNative()
+        instances = []
+        engine = SimpleNamespace(_import_runtime=lambda: None)
+        class FakeLlm:
+            def __init__(self, **kwargs):
+                self_outer.assertFalse(runtime.get_profiling_enabled())
+                self.has_draft_model = False
+                self._batch_scheduler = None
+                self._rt = engine._import_runtime()
+                self._runtime = runtime
+                instances.append(self)
+            def serve(self, **kwargs):
+                self_outer.assertTrue(runtime.get_profiling_enabled())
+                raise RuntimeError('server failed')
+        self_outer = self
+        engine.LLM = FakeLlm
+        server = ModuleType('experimental.server')
+        server.LLM = FakeLlm
+        server.engine = engine
+        server.api_server = SimpleNamespace(_generate_stream_sse=lambda llm_instance, response_id: iter(()),
+                                            _create_app=lambda llm_instance: None)
+        with patch.dict('sys.modules', {
+            'experimental': ModuleType('experimental'), 'experimental.server': server,
+            'uvicorn': ModuleType('uvicorn'),
+        }), patch('parksight_vlm.inference.edge_native.load_native_binding', return_value=runtime):
+            with self.assertRaisesRegex(RuntimeError, 'server failed'):
+                serve_prebuilt_engines(engine_root=Path('/engines'), host='127.0.0.1', port=8000,
+                                       native_binding_directory=Path('/candidate'), native_binding_sha256='0'*64,
+                                       serial_stage_metrics=True)
+        self.assertFalse(runtime.get_profiling_enabled())
+        self.assertIs(instances[0]._runtime, runtime)
+        with self.assertRaises(ValueError):
+            serve_prebuilt_engines(engine_root=Path('/engines'), host='127.0.0.1', port=8000,
+                                   http_max_batch_size=2, serial_stage_metrics=True)
 
 
 if __name__ == "__main__":

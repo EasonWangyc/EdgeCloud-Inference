@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Mapping
@@ -27,10 +28,12 @@ def build_commands(
     max_image_tokens: int,
     max_image_tokens_per_image: int,
     max_kv_pool_pages: int | None = None,
+    llm_builder_path: Path | None = None,
+    visual_builder_path: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     """生成先 LLM、后视觉编码器的两条确定性构建命令。"""
     llm_command = [
-        str(edge_root / "build" / "examples" / "llm" / "llm_build"),
+        str(llm_builder_path or edge_root / "build" / "examples" / "llm" / "llm_build"),
         "--onnxDir",
         str(onnx_root / "llm"),
         "--engineDir",
@@ -46,7 +49,7 @@ def build_commands(
         llm_command.extend(("--maxKVPoolPages", str(max_kv_pool_pages)))
     visual_command = [
         str(
-            edge_root
+            visual_builder_path or edge_root
             / "build"
             / "examples"
             / "multimodal"
@@ -77,12 +80,57 @@ def require_paged_kv_build_path(audit: Mapping[str, Any]) -> None:
         )
 
 
+def require_builder_controls(
+    builder: Path, *, component: str, profiling_verbosity: str | None,
+    timing_cache: Path | None,
+) -> str | None:
+    """Find a compiled profiling control and reject unavailable requested controls.
+
+    Presence is only a capability hint: effective settings still need engine/cache
+    inspection. The LLM builder supports a native --profilingDetailed flag even
+    when the optional environment-variable patch has not been compiled.
+    """
+    required = [b"EDGELLM_PROFILING_VERBOSITY"] if profiling_verbosity else []
+    if component == "llm" and profiling_verbosity == "detailed":
+        required.append(b"--profilingDetailed")
+    if timing_cache is not None:
+        required.append(b"EDGELLM_TIMING_CACHE_PATH")
+    if not required:
+        return None
+    found = set()
+    tail = b""
+    with builder.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            data = tail + chunk
+            found.update(key for key in required if key in data)
+            tail = data[-max(map(len, required)):]
+    profiling_mode = None
+    if profiling_verbosity is not None:
+        if component == "llm" and profiling_verbosity == "detailed" and b"--profilingDetailed" in found:
+            profiling_mode = "native_cli"
+        elif b"EDGELLM_PROFILING_VERBOSITY" in found:
+            profiling_mode = "environment"
+        else:
+            raise RuntimeError(
+                f"builder does not advertise profiling control for {profiling_verbosity}: {builder}"
+            )
+    missing = [key.decode("ascii") for key in required if key == b"EDGELLM_TIMING_CACHE_PATH" and key not in found]
+    if missing:
+        raise RuntimeError(
+            f"builder does not advertise requested controls {missing}: {builder}; "
+            "use a builder implementing these controls, or omit the unverified options"
+        )
+    return profiling_mode
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--edge-llm-root", required=True)
     parser.add_argument("--expected-revision", required=True)
     parser.add_argument("--onnx-root", required=True)
     parser.add_argument("--engine-root", required=True)
+    parser.add_argument("--llm-builder", type=Path, help="独立编译的 llm_build 路径")
+    parser.add_argument("--visual-builder", type=Path, help="独立编译的 visual_build 路径")
     parser.add_argument(
         "--component",
         choices=("both", "llm", "visual"),
@@ -208,14 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     edge_root = Path(args.edge_llm_root).resolve()
     onnx_root = Path(args.onnx_root).resolve()
     engine_root = Path(args.engine_root).resolve()
-    llm_builder = edge_root / "build" / "examples" / "llm" / "llm_build"
-    visual_builder = (
-        edge_root
-        / "build"
-        / "examples"
-        / "multimodal"
-        / "visual_build"
-    )
+    llm_builder = (args.llm_builder or edge_root / "build/examples/llm/llm_build").resolve()
+    visual_builder = (args.visual_builder or edge_root / "build/examples/multimodal/visual_build").resolve()
     plugin_path = edge_root / "build" / "libNvInfer_edgellm_plugin.so"
     required_paths = [plugin_path]
     if args.component in {"both", "llm"}:
@@ -311,8 +353,25 @@ def main(argv: list[str] | None = None) -> int:
         max_image_tokens=args.max_image_tokens,
         max_image_tokens_per_image=args.max_image_tokens_per_image,
         max_kv_pool_pages=args.max_kv_pool_pages,
+        llm_builder_path=llm_builder,
+        visual_builder_path=visual_builder,
     )
     child_environment = os.environ.copy()
+    selected_builders = []
+    if args.component in {"both", "llm"}:
+        selected_builders.append(("llm", llm_builder))
+    if args.component in {"both", "visual"}:
+        selected_builders.append(("visual", visual_builder))
+    profiling_modes = {
+        component: require_builder_controls(
+            builder, component=component,
+            profiling_verbosity=args.profiling_verbosity,
+            timing_cache=args.timing_cache,
+        )
+        for component, builder in selected_builders
+    }
+    if profiling_modes.get("llm") == "native_cli":
+        llm_command.append("--profilingDetailed")
     for tuning_variable in (
         "EDGELLM_WORKSPACE_LIMIT_MIB",
         "EDGELLM_BUILDER_OPT_LEVEL",
@@ -330,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         child_environment["EDGELLM_BUILDER_OPT_LEVEL"] = str(
             args.builder_optimization_level
         )
-    if args.profiling_verbosity is not None:
+    if "environment" in profiling_modes.values():
         child_environment["EDGELLM_PROFILING_VERBOSITY"] = args.profiling_verbosity
     if args.enable_weight_streaming:
         child_environment["EDGELLM_ENABLE_WEIGHT_STREAMING"] = "1"
@@ -351,6 +410,11 @@ def main(argv: list[str] | None = None) -> int:
         timing_cache_binding_report=timing_cache_binding_report,
         paged_kv_source_audit=paged_kv_source_audit,
     )
+    build_report["profiling_control_modes"] = profiling_modes
+    build_report["builder_binaries"] = {
+        component: {"path": str(builder), "sha256": sha256_file(builder)}
+        for component, builder in selected_builders
+    }
     try:
         if args.component in {"both", "llm"}:
             _run_build_step(
@@ -426,7 +490,12 @@ def _new_build_report(
             "max_image_tokens_per_image": args.max_image_tokens_per_image,
             "workspace_limit_mib": args.workspace_limit_mib,
             "builder_optimization_level": args.builder_optimization_level,
-            "profiling_verbosity": args.profiling_verbosity or "none",
+            "profiling_verbosity": args.profiling_verbosity,
+            "profiling_verbosity_provenance": (
+                "requested; effective engine setting requires inspection"
+                if args.profiling_verbosity is not None
+                else "not requested; effective engine setting requires inspection"
+            ),
             "enable_weight_streaming": args.enable_weight_streaming,
             "timing_cache": (
                 str(args.timing_cache)
@@ -485,14 +554,36 @@ def _run_build_step(
 ) -> None:
     started_at = datetime.now(timezone.utc)
     started_clock = time.perf_counter()
+    process_pid = None
     try:
-        subprocess.run(command, check=True, env=environment)
-    except subprocess.CalledProcessError as error:
+        process = subprocess.Popen(command, env=environment)
+        process_pid = process.pid
+        returncode = process.wait()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, command)
+    except (subprocess.CalledProcessError, OSError) as error:
+        returncode = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        signal_number = -returncode if returncode is not None and returncode < 0 else None
+        try:
+            signal_name = signal.Signals(signal_number).name if signal_number is not None else None
+        except ValueError:
+            signal_name = "UNKNOWN"
         report["steps"].append(
             {
                 "component": component,
                 "status": "failed",
-                "returncode": error.returncode,
+                "pid": process_pid,
+                "returncode": returncode,
+                "failure_category": (
+                    "process_signal" if signal_number is not None
+                    else ("launch_error" if process_pid is None else "process_wait_error") if isinstance(error, OSError)
+                    else "builder_nonzero_exit"
+                ),
+                "termination_signal_number": signal_number,
+                "termination_signal": signal_name,
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "oom_confirmed": None,
                 "started_at_utc": started_at.isoformat(),
                 "duration_ms": (time.perf_counter() - started_clock) * 1000.0,
             }
@@ -502,6 +593,7 @@ def _run_build_step(
         {
             "component": component,
             "status": "succeeded",
+            "pid": process_pid,
             "returncode": 0,
             "started_at_utc": started_at.isoformat(),
             "duration_ms": (time.perf_counter() - started_clock) * 1000.0,
