@@ -86,6 +86,11 @@ HTTP 调用被 mock，没有执行板端推理，也未验证 TensorRT 内部 pa
 JSONL 的可选 `decode_tokens`。汇总只配对同一条 completed 记录中的 token 数
 和耗时；一条记录只有 token、另一条只有时间时，不计算两者之间的速率。
 总体与每个 repetition 都保存参与速率计算的 `*_sample_count`。
+该 runner 还为每条完成请求记录 `assessment_valid`，用冻结的
+`ParkingAssessment` 规则校验输出 JSON；运行元数据中的
+`steady_state_valid_assessments` 和 `assessment_valid_rate` 只以完成请求为分母。
+原文仍不写入常规性能 JSONL；`compare_edgellm_concurrency_runs.py` 在该字段存在时
+将无效评估判为对照失败。
 
 低层 JSONL 的历史 `decode_tokens_per_second` 仍表示完整 output token 数除以
 decode 时间；新增 `measured_decode_tokens_per_second` 使用明确的 decode 计数。

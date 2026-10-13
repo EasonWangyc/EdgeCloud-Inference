@@ -69,6 +69,15 @@ def _load_run(jsonl: Path, metadata_path: Path) -> tuple[dict[tuple[str, int], d
         raise ValueError(f"{metadata_path}: output token total does not match JSONL")
     if metadata["cases"] * metadata["repetitions"] != count:
         raise ValueError(f"{metadata_path}: cases × repetitions does not match JSONL")
+    assessment_flags = [row.get("assessment_valid") for row in rows.values()]
+    if any(flag is not None for flag in assessment_flags):
+        if not all(isinstance(flag, bool) for flag in assessment_flags):
+            raise ValueError(f"{jsonl}: assessment_valid must be a boolean on every row")
+        valid_count = sum(assessment_flags)
+        if metadata.get("steady_state_valid_assessments") != valid_count:
+            raise ValueError(f"{metadata_path}: valid assessment count does not match JSONL")
+        if metadata.get("assessment_valid_rate") != valid_count / count:
+            raise ValueError(f"{metadata_path}: assessment valid rate does not match JSONL")
     concurrency = metadata.get("concurrency")
     throughput = metadata.get("aggregate_output_tokens_per_second")
     wall_ms = metadata.get("steady_state_wall_clock_ms")
@@ -104,19 +113,28 @@ def compare(
     keys = set(row_maps[0])
     if any(set(rows) != keys for rows in row_maps[1:]):
         raise ValueError("run sample/repetition identities differ")
+    validity_recorded = ["assessment_valid" in next(iter(rows.values())) for rows in row_maps]
+    if len(set(validity_recorded)) != 1:
+        raise ValueError("assessment_valid recording differs between runs")
     mismatches = []
+    invalid_assessments = []
     for key in sorted(keys):
         outputs = [rows[key] for rows in row_maps]
         if len({row["output_sha256"] for row in outputs}) != 1 or len({row["output_tokens"] for row in outputs}) != 1:
             mismatches.append({"sample_id": key[0], "repetition": key[1],
                                "output_sha256": [row["output_sha256"] for row in outputs],
                                "output_tokens": [row["output_tokens"] for row in outputs]})
+        if validity_recorded[0] and not all(row["assessment_valid"] for row in outputs):
+            invalid_assessments.append({"sample_id": key[0], "repetition": key[1],
+                                        "assessment_valid": [row["assessment_valid"] for row in outputs]})
     throughputs = [item["aggregate_output_tokens_per_second"] for item in metadata]
     faster_than_both = throughputs[1] > max(throughputs[0], throughputs[2])
     return {
         "schema_version": "parksight_edgellm_concurrency_aba_comparison_v1",
-        "passed": not mismatches and faster_than_both,
+        "passed": not mismatches and not invalid_assessments and faster_than_both,
         "exact_output_equal": not mismatches,
+        "assessment_contract_checked": validity_recorded[0],
+        "invalid_assessments": invalid_assessments,
         "candidate_faster_than_both_baselines": faster_than_both,
         "sample_count": len(keys),
         "fixed_workload": fixed[0],

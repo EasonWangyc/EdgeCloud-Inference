@@ -7,7 +7,10 @@ import unittest
 from scripts.compare_edgellm_concurrency_runs import compare
 
 
-def write_run(root: Path, name: str, *, concurrency: int, output: str = "same") -> tuple[Path, Path]:
+def write_run(
+    root: Path, name: str, *, concurrency: int, output: str = "same",
+    assessment_valid: bool | None = None,
+) -> tuple[Path, Path]:
     jsonl = root / f"{name}.jsonl"
     metadata = root / f"{name}.run.json"
     row = {
@@ -15,8 +18,10 @@ def write_run(root: Path, name: str, *, concurrency: int, output: str = "same") 
         "output_tokens": 3,
         "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
     }
+    if assessment_valid is not None:
+        row["assessment_valid"] = assessment_valid
     jsonl.write_text(json.dumps(row) + "\n")
-    metadata.write_text(json.dumps({
+    run_metadata = {
         "cases": 1, "repetitions": 1, "warmup": 1,
         "concurrency": concurrency, "max_batch_size": 4,
         "max_kv_pool_pages": None, "stream_responses": True,
@@ -24,7 +29,11 @@ def write_run(root: Path, name: str, *, concurrency: int, output: str = "same") 
         "steady_state_completed_requests": 1, "steady_state_output_tokens": 3,
         "steady_state_wall_clock_ms": 150.0 if concurrency == 1 else 100.0,
         "aggregate_output_tokens_per_second": 20.0 if concurrency == 1 else 30.0,
-    }))
+    }
+    if assessment_valid is not None:
+        run_metadata["steady_state_valid_assessments"] = int(assessment_valid)
+        run_metadata["assessment_valid_rate"] = float(assessment_valid)
+    metadata.write_text(json.dumps(run_metadata))
     return jsonl, metadata
 
 
@@ -59,6 +68,22 @@ class ConcurrencyAbaComparisonTests(unittest.TestCase):
             self.assertFalse(result["passed"])
             self.assertEqual(result["sample_count"], 1)
             self.assertEqual(len(result["exact_output_mismatches"]), 1)
+
+    def test_invalid_assessment_fails_even_when_hashes_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = write_run(root, "before", concurrency=1, assessment_valid=True)
+            candidate = write_run(root, "candidate", concurrency=4, assessment_valid=False)
+            after = write_run(root, "after", concurrency=1, assessment_valid=True)
+            result = compare(
+                before_jsonl=before[0], before_metadata=before[1],
+                candidate_jsonl=candidate[0], candidate_metadata=candidate[1],
+                after_jsonl=after[0], after_metadata=after[1],
+            )
+            self.assertTrue(result["exact_output_equal"])
+            self.assertTrue(result["assessment_contract_checked"])
+            self.assertEqual(len(result["invalid_assessments"]), 1)
+            self.assertFalse(result["passed"])
 
     def test_missing_hash_or_failed_request_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:

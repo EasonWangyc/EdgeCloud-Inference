@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from parksight_vlm.assessment import ParkingAssessment
 from parksight_vlm.casebook import DatasetSplit, ParkingCase
 from parksight_vlm.inference.edge_llm import EdgeLlmHttpBackend
 from parksight_vlm.workload import FrozenWorkload
@@ -125,6 +126,7 @@ def run_sample(
             "status": "completed",
             "output_tokens": generation.output_tokens,
             "output_sha256": hashlib.sha256(generation.raw_output.encode("utf-8")).hexdigest(),
+            "assessment_valid": _assessment_valid(generation.raw_output),
             "decode_tokens": getattr(generation, "decode_tokens", None),
             "timings_ms": timings,
         }
@@ -143,6 +145,15 @@ def run_sample(
                 "exception_type": error.__class__.__name__,
             },
         }
+
+
+def _assessment_valid(raw_output: str) -> bool:
+    """Check the frozen parking JSON contract without storing the raw response."""
+    try:
+        ParkingAssessment.from_mapping(json.loads(raw_output))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def benchmark(
@@ -219,11 +230,16 @@ def benchmark(
         for row in completed_rows
         if isinstance(row.get("output_tokens"), int)
     )
+    valid_assessments = sum(row.get("assessment_valid") is True for row in completed_rows)
     wall_clock_seconds = steady_state_wall_clock_ms / 1000.0
     return {
         "steady_state_wall_clock_ms": steady_state_wall_clock_ms,
         "steady_state_requests": len(rows),
         "steady_state_completed_requests": len(completed_rows),
+        "steady_state_valid_assessments": valid_assessments,
+        "assessment_valid_rate": (
+            valid_assessments / len(completed_rows) if completed_rows else None
+        ),
         "steady_state_output_tokens": output_tokens,
         "aggregate_output_tokens_per_second": (
             output_tokens / wall_clock_seconds if wall_clock_seconds > 0 else None
