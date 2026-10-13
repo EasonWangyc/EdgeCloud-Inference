@@ -19,6 +19,9 @@ engine，得到 27.627 output tokens/s；融合候选相对它提升 1.79%–1.9
 首次融合构建曾选择更慢的 GEMVX，20 图吞吐仅 26.869，已否决。详见
 [Jetson 实验证据](jetson-readiness.md)。timing cache 复用将同图构建从 113.17 秒
 缩短到 35.37 秒，不作为推理吞吐收益。
+同构建条件的 1000-step direct decode A-B-A 复验中，未融合为
+36.4928/36.5156 tokens/s，融合为 37.3506 tokens/s；三段均成功。
+这是纯 LLM 低层稳定性证据，完整 VLM 结论仍以上述 PS20 为准。
 
 ## P0-P3 执行顺序与验收边界
 

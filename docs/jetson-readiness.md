@@ -753,6 +753,20 @@ INT4 类 GPU event 合计 1598.01→1531.64 ms，主 `lm_head` Ampere tactic
 `ps20_int4_unfused_detailed_study.json`、
 `int4_fusion_vs_unfused_detailed_comparison_v2.json` 和
 `nsight_int4_fusion_vs_unfused_detailed_v4.json`。
+
+2026-10-13 再用上述两份实测 engine 做 direct C++ decode 长稳复验：
+`i768/k1024`、batch=1、Graph、seed=0、warm-up=10，按未融合→融合→未融合
+顺序各运行 1000 次。三段均正常退出，吞吐依次为
+36.4928→37.3506→36.5156 tokens/s；融合相对两侧未融合均值提升
+2.32%。三份原始 CSV/日志的 SHA-256 均与执行清单匹配，未见 CUDA 错误；
+三段日志仍有已知 `IRuntime::~IRuntime` 析构警告。全程 tegrastats
+202 个采样，整机 RAM 峰值 4440 MB、SWAP 峰值 1607 MB、平均瞬时
+`VDD_IN` 12.335 W、结温峰值 56.687 °C。这是固定长度的纯 LLM decode，
+可核对长时间执行稳定性和局部吞吐，不代替包含视觉与 HTTP 的 PS20 验收。
+原始归档 `reports/jetson-readiness-20261012/int4_detailed_direct_soak_artifacts.tgz`
+SHA-256 为 `e805648e7c079e8876d06b571ac4430f36c46042842d00ace9def95afc31606a`；
+归档中的 `execution.json` 记录 engine、benchmark 二进制和 plugin 哈希。
+
 对同一 fusion 图、同一 builder/config 再构建一次时，TensorRT 日志明确从
 687700 字节 cache 加载 315 个 timing 条目；构建时间由首次创建的 113.17 秒
 降至复用的 35.37 秒（约 3.20 倍）。复用后的 engine 可反序列化，仍为
