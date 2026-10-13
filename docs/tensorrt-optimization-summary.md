@@ -12,8 +12,10 @@
 2026-10-12 的冻结 PS20 同机测试中，旧 level1 的紧邻对照为 27.558 output tokens/s，
 INT4 Q/K/V 与 gate/up 融合、详细 profiling 重建的 engine 两次为 28.122 和
 28.178 output tokens/s；20 图输出逐样本完全一致。后一组 decode p50 为
-2059.90 ms，对照为 2110.59 ms。Nsight 显示 INT4 GPU event 合计缩短约
-67.08 ms/95 forward；`lm_head` 保持 Ampere GEMM tactic。未开启详细 profiling 的
+2059.90 ms，对照为 2110.59 ms。进一步使用同一独立 builder 重建未融合详细
+engine，得到 27.627 output tokens/s；融合候选相对它提升 1.79%–1.99%。
+同图 Nsight 显示 INT4 GPU event 合计缩短 66.37 ms/95 forward，
+`lm_head` 保持 Ampere GEMM tactic。未开启详细 profiling 的
 首次融合构建曾选择更慢的 GEMVX，20 图吞吐仅 26.869，已否决。详见
 [Jetson 实验证据](jetson-readiness.md)。timing cache 复用将同图构建从 113.17 秒
 缩短到 35.37 秒，不作为推理吞吐收益。

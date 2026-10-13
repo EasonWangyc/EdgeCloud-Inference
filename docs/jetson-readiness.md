@@ -735,6 +735,24 @@ INT4 类合计为 1531.64 对 1598.72 ms。94 次成功 Graph replay 均关联
 `nsight_int4_fusion_detailed_evidence.json`、`nsight_int4_fusion_detailed_replay.json`、
 `nsight_int4_fusion_detailed_vs_level1_v4.json` 保存原始轨迹、关联与分类对比。
 GPU event 时长不能直接当作端到端时延。
+
+为隔离 builder 重建的影响，又用相同独立 builder SHA-256
+`56172aa9ba0ef1c746b45ff404f9f7c1bbaec92ecb68f979377e663639b488d7`、
+相同 level1/workspace1024、`--profilingDetailed` 和全新 timing cache 构建
+**未融合**原图。对照 engine SHA-256
+`7daedae0a0b8a24eb68690f40b947527523d1cc1f8e4633b8b6ab2c8ba18705a`，
+inspector 为 `DETAILED`、2144 层，输出层同样选 Ampere GEMM。
+冻结 PS20 对照吞吐为 27.627 output tokens/s、decode p50 为 2109.46 ms；
+融合 engine 两次相对它的吞吐提升分别为 1.79% 和 1.99%，decode p50
+分别降低 2.15% 和 2.35%，20/20 输出逐样本一致。
+同图 Nsight 为 94 次 Graph replay，每次 kernel 从 452 降至 368；
+INT4 类 GPU event 合计 1598.01→1531.64 ms，主 `lm_head` Ampere tactic
+保持一致，整体 kernel event 3052.47→2976.30 ms。上述结果将性能差异
+限定到融合图及由它触发的 tactic 选择，不能把全部收益简单解释为减少 launch。
+证据见 `int4_unfused_detailed_build_evidence.json`、
+`ps20_int4_unfused_detailed_study.json`、
+`int4_fusion_vs_unfused_detailed_comparison_v2.json` 和
+`nsight_int4_fusion_vs_unfused_detailed_v4.json`。
 对同一 fusion 图、同一 builder/config 再构建一次时，TensorRT 日志明确从
 687700 字节 cache 加载 315 个 timing 条目；构建时间由首次创建的 113.17 秒
 降至复用的 35.37 秒（约 3.20 倍）。复用后的 engine 可反序列化，仍为
