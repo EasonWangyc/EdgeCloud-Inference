@@ -40,6 +40,7 @@ from scripts.serve_edgellm import (
     configure_profile_switch_timing,
     configure_weight_streaming_budget,
     deployment_readiness,
+    resolve_http_max_batch_size,
     serve_prebuilt_engines,
     verify_runtime_patch_chain,
 )
@@ -735,6 +736,36 @@ class DeploymentTests(unittest.TestCase):
                              {"path": str(module), "sha256": sha})
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 main(["--engine-root", str(root), "--check-only", "--native-binding-directory", str(binding)])
+
+    def test_http_batch_infers_engine_max_and_rejects_mismatch_before_gpu_import(self):
+        from scripts.serve_edgellm import main
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("llm/llm.engine", "visual/visual.engine"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"engine")
+            (root / "llm/config.json").write_text(json.dumps({
+                "builder_config": {"max_batch_size": 4},
+            }))
+            self.assertEqual(resolve_http_max_batch_size(root / "llm", None), (4, 4))
+            self.assertEqual(resolve_http_max_batch_size(root / "llm", 4), (4, 4))
+            with self.assertRaisesRegex(ValueError, "does not match engine"):
+                resolve_http_max_batch_size(root / "llm", 1)
+
+            output = io.StringIO()
+            with patch.dict("os.environ", {}, clear=True), contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--engine-root", str(root), "--check-only"]), 0)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["http_max_batch_size"], 4)
+            self.assertEqual(report["engine_max_batch_size"], 4)
+
+            output = io.StringIO()
+            with patch.dict("os.environ", {}, clear=True), contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--engine-root", str(root), "--check-only",
+                                       "--http-max-batch-size", "1"]), 2)
+            self.assertIn("does not match engine", json.loads(output.getvalue())["configuration_error"])
 
     def test_serial_mode_disables_profiling_during_construction_and_after_server_failure(self):
         from tests.inference.test_edge_stage_metrics import FakeNative
