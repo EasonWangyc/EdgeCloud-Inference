@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import inspect
 import json
 import threading
@@ -123,7 +124,8 @@ def run_sample(
             "repetition": repetition,
             "status": "completed",
             "output_tokens": generation.output_tokens,
-            "decode_tokens": generation.decode_tokens,
+            "output_sha256": hashlib.sha256(generation.raw_output.encode("utf-8")).hexdigest(),
+            "decode_tokens": getattr(generation, "decode_tokens", None),
             "timings_ms": timings,
         }
     except Exception as error:  # benchmark 需保留失败样本，不因单样本退出

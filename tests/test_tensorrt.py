@@ -1235,10 +1235,45 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
 
         self.assertEqual(row["status"], "completed")
         self.assertEqual(row["decode_tokens"], 3)
+        self.assertEqual(row["output_sha256"], hashlib.sha256(b"{}").hexdigest())
         self.assertEqual(row["timings_ms"]["decode_ms"], 20.0)
         self.assertEqual(row["timings_ms"]["http_round_trip_ms"], 25.0)
         self.assertEqual(row["timings_ms"]["time_to_first_token_ms"], 12.0)
         self.assertGreater(row["timings_ms"]["end_to_end_ms"], 0.0)
+
+    def test_low_level_runner_accepts_legacy_generation_without_decode_count(self) -> None:
+        from types import SimpleNamespace
+        from parksight_vlm.inference.runtime import StageTimings
+
+        class LegacyBackend:
+            def generate(self, *, image_path: Path, workload: object) -> object:
+                return SimpleNamespace(
+                    raw_output='{"risk_level":"low"}',
+                    stage_timings=StageTimings(http_round_trip_ms=15.0),
+                    output_tokens=5,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "image.jpg").write_bytes(b"test")
+            parking_case = ParkingCase(
+                case_id="case-legacy",
+                image_ref=PurePosixPath("image.jpg"),
+                source_group_id="group-legacy",
+                split=DatasetSplit.TEST,
+                reference_assessment=None,
+            )
+            row = run_sample(
+                backend=LegacyBackend(), case=parking_case, workload=object(),
+                data_root=root, repetition=1,
+            )
+
+        self.assertEqual(row["status"], "completed")
+        self.assertIsNone(row["decode_tokens"])
+        self.assertEqual(
+            row["output_sha256"],
+            hashlib.sha256(b'{"risk_level":"low"}').hexdigest(),
+        )
 
     def test_low_level_runner_persists_failed_warmup_before_aborting(self) -> None:
         class FailingBackend:
