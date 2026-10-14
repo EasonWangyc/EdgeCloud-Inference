@@ -38,11 +38,11 @@ P2 已在板端完成 c=2/c=4 各 60/60 和 c=4 的 100/100 HTTP soak，并补�
 2. **路由信号尚不完整。** 当前默认 provider 刷新端、云 HTTP 健康状态；显存余量、温度、RTT 与丢包率由接口或配置提供，尚无实时采集。`/health` 仅证明服务可达，不能代替真实多模态推理。路由策略的延迟、质量、云使用率和失败回退需要同一工作负载的独立报告。
 3. **数据来源和泛化证据不足。** `ps80_human_confirmed_v1` 为 train 64 / validation 16，当前每张图片各有一个 `source_group_id`，并不能证明视频连续帧和同场景图片已按真实来源归组。validation 没有 high、VRU 或车位冲突正例，固定障碍正例仅 1 个。PS20 只有 20 张，属于 pilot；PS80 validation 已参与多轮方案选择，不能充当独立测试集。
 4. **微调效果不稳定。** 服务器 Transformers 的 PS80 validation 上，reviewed v2/v3 风险准确率均为 0.563、事件 micro-F1 均为 0.429；v4 分别下降到 0.375 和 0.353（n=16）。严格 JSON 有效率为 1.0 只表示输出格式可解析。现有小样本和类别不平衡不足以判断 LoRA 的稳定收益。完整误差与数据方案见 [数据集与 LoRA 优化方案](dataset-and-finetuning-roadmap.md)。
-5. **本地证据尚未形成可直接重建的迁移包。** `.gitignore` 排除了 `data/raw/`、`data/processed/`、`artifacts/`、`reports/`、`models/`、`patches/`、`.venv/` 等目录；其中原图、训练/量化产物和原始报告在当前工作区确实存在。只克隆 Git 仓库会丢失这些材料。当前 `main` 的 HEAD 为 `374ab83`，工作区还有大量未提交的修改、新文件和删除记录，迁移时必须按实际工作区保存，不能只依据 HEAD 重建。
+5. **本地证据尚未形成可直接重建的迁移包。** `.gitignore` 排除了 `data/raw/`、`data/processed/`、`artifacts/`、`reports/`、`models/`、`patches/`、`.venv/` 等目录；其中原图、训练/量化产物和原始报告在当前工作区确实存在。只克隆 Git 仓库会丢失这些材料。迁移前 `main` 的 HEAD 为 `374ab83`，当时的修改、新文件和删除记录已整体提交为 `ba69d80` 并推送；所有本地产物随完整工作区迁入 WSL，实际执行结果见文末。
 
 ## WSL 迁移顺序与验收
 
-以下是迁移计划，**本文件不表示已执行迁移或安装**。执行前先在 Windows/Jetson 留存目录清单、文件大小和关键模型/engine/报告 SHA-256，确认数据授权和目标磁盘空间。复制现有工作区时保留未提交文件、配置和版本化元数据；对被忽略的原图、处理后数据、adapter、模型、engine、patch 与原始报告单独清点和备份。不要把 Windows `.venv` 当成 WSL 环境复用，也不要把 Jetson 构建的 engine 当成 laptop GPU engine。
+以下为迁移前制定的流程；代码、数据与无硬件开发环境的迁移执行结果见文末。真实 vLLM GPU 部署、两机路由和新一轮质量研究继续按后续步骤推进。执行前先在 Windows/Jetson 留存目录清单、文件大小和关键模型/engine/报告 SHA-256，确认数据授权和目标磁盘空间。复制现有工作区时保留未提交文件、配置和版本化元数据；对被忽略的原图、处理后数据、adapter、模型、engine、patch 与原始报告单独清点和备份。不要把 Windows `.venv` 当成 WSL 环境复用，也不要把 Jetson 构建的 engine 当成 laptop GPU engine。
 
 1. **代码与证据落盘。** 在 WSL 的 Linux 文件系统建立工作目录，恢复当前工作区和必要的本地数据/报告，核对文件数量、关键哈希、`git status` 和 HEAD。若选择 Git 传输，需另外转移未提交及忽略文件；当前已有删除记录应按原样保留，避免迁移工具把历史文件意外恢复。
 2. **环境基线。** 在 WSL 记录发行版、Python、Windows/WSL GPU 驱动可见性、CUDA/PyTorch/vLLM 版本和 laptop 可用显存。vLLM 官方文档当前要求 Linux，并给出 WSL 作为 Windows 上的运行途径；微软文档说明 WSL 2 可使用 NVIDIA CUDA。具体版本组合与目标模型是否能在本机显存中稳定加载，仍需本机实测。[vLLM GPU 安装要求](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/) · [Microsoft WSL CUDA 指南](https://learn.microsoft.com/en-us/windows/ai/directml/gpu-cuda-in-wsl)
@@ -59,3 +59,34 @@ P2 已在板端完成 c=2/c=4 各 60/60 和 c=4 的 100/100 HTTP soak，并补�
 - [vLLM Adapter](../src/parksight_vlm/inference/vllm.py)、[端云路由实现](../src/parksight_vlm/inference/routing.py)
 - [云侧 study 模板](../configs/studies/server_vllm_http_ps20_pilot.example.json)、[端云 study 模板](../configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json)
 - [TensorRT 性能与候选边界](tensorrt-optimization-summary.md)、[数据集与 LoRA 方案](dataset-and-finetuning-roadmap.md)
+
+## 2026-10-03 迁移执行记录
+
+远程仓库已更名为 [EasonWangyc/EdgeCloud-Inference](https://github.com/EasonWangyc/EdgeCloud-Inference)，`origin` 为 `git@github.com:EasonWangyc/EdgeCloud-Inference.git`。已有工作区修改已在迁移前提交并推送，提交为 `ba69d8059b583732098486b06c70f8e7909ee5c7`，共涉及 47 个文件，包含既有新增、修改和删除。
+
+| 项目 | 实际结果 |
+| --- | --- |
+| 运行环境 | WSL 2，Ubuntu-22.04；CPython 3.10.12 |
+| 主工作区 | `/home/easonwangyc/code/EdgeCloud-Inference` |
+| 迁移内容 | 完整工作区，包含 `.git`、模型、原图、处理后数据、adapter、报告、patch 和本地配置 |
+| 内容校验 | 34,484 个普通文件，35,207 个文件/目录条目，36,326,442,280 字节；两侧逐文件 SHA-256 和目录清单全部一致 |
+| Linux 开发环境 | 新建 `.venv`，通过 uv 以 editable 方式安装当前项目 |
+| Windows 环境归档 | 原 `.venv` 保存在 `.migration/windows-venv/`，供溯源使用 |
+| 测试 | Windows 迁移前 264 项通过；WSL 迁移后 264 项通过 |
+| 其他检查 | `compileall`、两个 CLI 的 `--help`、`git diff --check` 通过；`git fsck --full` 退出码 0，保留既有 dangling 对象 |
+| Windows 原目录 | 完整性与运行验证通过，待执行最终清理 |
+
+迁移清单和校验工具保存在 `.migration/windows-sha256.json`、`.migration/wsl-sha256.json`、`.migration/transfer-verification.json`、`.migration/migration_manifest.py`；WSL 测试日志保存在 `.migration/wsl-tests.log`。哈希清单记录的是复制完成、Linux 环境调整前的状态。之后的明确变化包括 Windows 虚拟环境归档、新 Linux 环境创建、Git 换行/大小写配置调整、Python 缓存和本迁移记录更新。
+
+`.migration/` 与 editable 安装生成的 `*.egg-info/` 均被 Git 忽略。模型、数据和原始报告的保留位置与相对路径保持一致，迁移清单和环境归档存放在本地 WSL 工作区。
+
+WSL 内的开发入口：
+
+```bash
+cd /home/easonwangyc/code/EdgeCloud-Inference
+source .venv/bin/activate
+parksight-study --help
+python -m unittest discover -s tests -q
+```
+
+本次迁移验证覆盖代码、数据、Git 和无硬件开发环境。vLLM/CUDA 模型推理、Jetson 联调、端云路由实测以及训练环境仍按对应部署记录单独验收。
