@@ -14,6 +14,7 @@ data/raw/
 data/processed/
 artifacts/
 reports/
+docs/source-study/
 models/
 *.onnx
 *.engine

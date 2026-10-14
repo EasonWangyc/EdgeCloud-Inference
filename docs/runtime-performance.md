@@ -86,6 +86,11 @@ HTTP 调用被 mock，没有执行板端推理，也未验证 TensorRT 内部 pa
 JSONL 的可选 `decode_tokens`。汇总只配对同一条 completed 记录中的 token 数
 和耗时；一条记录只有 token、另一条只有时间时，不计算两者之间的速率。
 总体与每个 repetition 都保存参与速率计算的 `*_sample_count`。
+该 runner 还为每条完成请求记录 `assessment_valid`，用冻结的
+`ParkingAssessment` 规则校验输出 JSON；运行元数据中的
+`steady_state_valid_assessments` 和 `assessment_valid_rate` 只以完成请求为分母。
+原文仍不写入常规性能 JSONL；`compare_edgellm_concurrency_runs.py` 在该字段存在时
+将无效评估判为对照失败。
 
 低层 JSONL 的历史 `decode_tokens_per_second` 仍表示完整 output token 数除以
 decode 时间；新增 `measured_decode_tokens_per_second` 使用明确的 decode 计数。
@@ -714,7 +719,8 @@ python scripts/compare_tensorrt_study_reports.py \
 单图 generation trace 中，主 FP16 GEMM 从平均 110.55 ms 降至 10.36 ms；
 INT4 WoQ GEMV 总时长仍约 1335 ms，占 level1 全部 kernel event 时长的
 43.79%，高于主 GEMM 的 32.28%。这将后续优化重点移到 INT4 GEMV，而非
-仅有数毫秒总时长的 sampling。精确 layer attribution 尚未闭环。
+仅有数毫秒总时长的 sampling。该首轮 trace 未提供完整 layer attribution；
+后续详细 profiling 重建已核对输出层 tactic。
 
 两组均观测到 94 次成功 Graph replay，每次 452 条关联 kernel 事件，输出
 一致。汇总分类采用 v3，两份 CSV 必须重算后比较。复查关联的命令为：
@@ -745,11 +751,40 @@ Ampere half GEMM 的 10.36 ms，抵消了融合收益。kernel 数减少与局�
 
 汇总分类升级为 `parksight_cuda_kernel_names_v4`，将明确含
 `gemvx_f16f16_` 的符号单列为 `fp16_gemv`，不将其误报为 other_kernel 或
-INT4 GEMV。两组 CSV 均重算 v4 后比较，旧摘要不覆盖。具体 layer 归因
-仍需足够详细的 engine inspector 与 trace 共同核对。
+INT4 GEMV。两组 CSV 均重算 v4 后比较，旧摘要不覆盖。该首测 engine
+的 inspector 粒度不足；后续详细 profiling 重建可核对输出层 tactic，
+其余 INT4 layer 的精确耗时仍需进一步逐层关联。
 
 level2/workspace1024 构建失败的日志含明确 CUDA 分配失败，随后报告无可用
 tactic；不能将最后一条消息单独解释为算子不支持。engine inspector 使用
 只读 mmap，减少 Python 整份 engine 的临时副本；它不消除 TensorRT 自身的
 GPU 权重和上下文占用。完整证据与后续 workspace512 试验见
 [验收记录](jetson-readiness.md#qkv-与-gateup-融合候选2026-10-12)。
+
+## 详细融合 engine 与系统资源
+
+使用同一独立 builder、level1/workspace1024 和详细 profiling 重建未融合
+对照后，冻结 PS20 的吞吐为 27.627 output tokens/s；融合候选两次为
+28.122 和 28.178 output tokens/s，提升 1.79% 和 1.99%。两种 engine
+的输出逐样本完全一致，输出层均选择 Ampere GEMM。相同输入的 Nsight
+trace 中，94 次 Graph replay 各自的 kernel 数为 452 与 368；INT4 类
+GPU event 总和从 1598.01 降至 1531.64 ms。trace 的 GPU event 总和
+不是 PS20 端到端时延，完整构建与实验身份见[验收记录](jetson-readiness.md)。
+
+`scripts/summarize_jetson_tegrastats.py` 将 Jetson 的 tegrastats 日志按
+StudyReport 请求时间窗截取，生成独立系统资源摘要。例如：
+
+```bash
+python scripts/summarize_jetson_tegrastats.py \
+  --tegrastats reports/jetson-readiness-20261012/ps20-tegrastats-artifacts/int4_fusion_detailed.log \
+  --study-report reports/jetson-readiness-20261012/int4_fusion_detailed_report.json \
+  --timezone-offset +0800 \
+  --output reports/jetson-readiness-20261012/int4_fusion_detailed_telemetry.json
+```
+
+四轮 PS20 的请求时间窗各有 110–113 个采样，整机 RAM 峰值
+5100–5163/7619 MB、SWAP 峰值 1646–1653/3810 MB，平均瞬时
+`VDD_IN` 约 12.00–12.18 W，GPU/结温峰值约 51.94–56.47 °C。
+这些数值是整机遥测，不是进程内存峰值或逐请求能耗；不同运行顺序下的
+温度也不能直接用于推断融合的散热收益。原 StudyReport 的资源字段
+保持空值，避免将整机数值误填为进程指标。

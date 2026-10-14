@@ -35,6 +35,38 @@ def _resolve_engine_directories(
     return llm_engine_root, visual_engine_root
 
 
+def resolve_http_max_batch_size(
+    llm_engine_root: Path, requested: int | None,
+) -> tuple[int, int | None]:
+    """Match the HTTP scheduler to the built LLM engine before loading CUDA."""
+    if requested is not None and (
+        isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0
+    ):
+        raise ValueError("--http-max-batch-size must be positive")
+    config_path = llm_engine_root / "config.json"
+    if not config_path.is_file():
+        return requested or 1, None
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read LLM engine config: {config_path}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"LLM engine config must be an object: {config_path}")
+    builder = payload.get("builder_config")
+    engine_max = builder.get("max_batch_size") if isinstance(builder, dict) else None
+    if engine_max is None:
+        return requested or 1, None
+    if isinstance(engine_max, bool) or not isinstance(engine_max, int) or engine_max <= 0:
+        raise ValueError(f"invalid builder_config.max_batch_size in {config_path}")
+    effective = engine_max if requested is None else requested
+    if effective != engine_max:
+        raise ValueError(
+            f"--http-max-batch-size={effective} does not match engine max_batch_size={engine_max}; "
+            "this Jetson runtime requires matching batch dimensions"
+        )
+    return effective, engine_max
+
+
 def serve_prebuilt_engines(
     *,
     engine_root: Path | None = None,
@@ -204,6 +236,8 @@ def build_runtime_metadata(
     native_binding_directory: Path | None = None,
     native_binding_sha256: str | None = None,
     serial_stage_metrics: bool = False,
+    http_max_batch_size: int | None = None,
+    engine_max_batch_size: int | None = None,
 ) -> dict[str, Any]:
     """构造一次服务启动的 engine 与 runtime 开关身份。"""
     metadata = {
@@ -218,6 +252,8 @@ def build_runtime_metadata(
         "options": {
             "stream_usage": stream_usage,
             "serial_stage_metrics": serial_stage_metrics,
+            "http_max_batch_size": http_max_batch_size,
+            "engine_max_batch_size": engine_max_batch_size,
             "cuda_graph": cuda_graph or "default",
             "pin_optimization_profiles": _option_state(pin_optimization_profiles),
             "profile_switch_timing": _option_state(profile_switch_timing),
@@ -627,8 +663,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--http-max-batch-size",
         type=int,
-        default=1,
-        help="HTTP 微批调度的最大原生 batch；必须不大于已构建 engine 的 maxBatch",
+        default=None,
+        help="HTTP 微批调度上限；默认从 LLM engine config 读取，显式值必须匹配 engine maxBatch",
     )
     parser.add_argument(
         "--weight-streaming-budget-bytes",
@@ -782,11 +818,11 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as error:
             parser.error(str(error))
 
-    if args.http_max_batch_size <= 0:
+    if args.http_max_batch_size is not None and args.http_max_batch_size <= 0:
         parser.error("--http-max-batch-size must be positive")
     if args.serial_stage_metrics:
-        if args.http_max_batch_size != 1 or args.native_binding_directory is None:
-            parser.error("serial stage metrics require batch size 1 and an explicit candidate binding")
+        if args.native_binding_directory is None:
+            parser.error("serial stage metrics require an explicit candidate binding")
         args.stream_usage = True
 
     try:
@@ -815,6 +851,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         if binding_override is not None:
             report["native_binding_override"] = binding_override
+        if report["ready"]:
+            try:
+                effective_batch, engine_batch = resolve_http_max_batch_size(
+                    Path(report["llm_engine_root"]), args.http_max_batch_size
+                )
+                report["http_max_batch_size"] = effective_batch
+                report["engine_max_batch_size"] = engine_batch
+                if args.serial_stage_metrics and effective_batch != 1:
+                    raise ValueError("serial stage metrics require batch size 1")
+            except ValueError as error:
+                report["ready"] = False
+                report["configuration_error"] = str(error)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ready"] else 2
 
@@ -839,6 +887,15 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if missing_engines:
         raise FileNotFoundError(f"缺少预构建 engine：{missing_engines}")
+
+    try:
+        args.http_max_batch_size, engine_max_batch_size = resolve_http_max_batch_size(
+            llm_engine_root, args.http_max_batch_size
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    if args.serial_stage_metrics and args.http_max_batch_size != 1:
+        parser.error("serial stage metrics require batch size 1")
 
     configure_edge_llm_environment(args.edge_llm_root, args.plugin_path)
     configure_weight_streaming_budget(args.weight_streaming_budget_bytes)
@@ -882,6 +939,8 @@ def main(argv: list[str] | None = None) -> int:
                 native_binding_directory=args.native_binding_directory,
                 native_binding_sha256=args.native_binding_sha256,
                 serial_stage_metrics=args.serial_stage_metrics,
+                http_max_batch_size=args.http_max_batch_size,
+                engine_max_batch_size=engine_max_batch_size,
             ),
         )
     serve_prebuilt_engines(

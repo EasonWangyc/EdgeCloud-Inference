@@ -95,13 +95,15 @@ output throughput `40.9566 tok/s`；59 个采样点中 RAM 为 `5636--5656/7619 
 [`dynamic-http-scheduler-c4-telemetry`](../reports/tensorrt-priority/p2/dynamic-http-scheduler-c4-telemetry)，
 目前没有同口径 baseline telemetry，因此只作为资源事实，不作为“内存无恶化”的 A/B 结论。
 
-### P2 完成条件
+### P2 完成条件与结果
 
-- concurrency=1/2/4 在相同 20 个冻结样本和相同 engine 下完成 3 次重复；当前已完成
-  c=2、c=4，c=1 仍作为串行 control 保留；
-- 无 `slots missing`、`oldActiveBatch`、CUDA Graph invalidation 和超时；
-- 记录请求完成率、请求级 TTFT/E2E、wall-clock aggregate output tok/s、显存/RAM/swap；
-- 再做 100 次连续 soak，确认中途 admission、eviction、reclaim 和最后一个请求退出均稳定。
+已在同一服务进程、同一 batch=4 engine 上完成 PS20 c=1→4→1，每段 3×20
+请求、warm-up 1 次。三段均 60/60 完成，逐图输出哈希与 token 数一致；墙钟吞吐为
+`27.259→40.169→27.261 output tok/s`，c=4 比两侧 c=1 均值高 47.36%。此前
+c=4 的 100 请求 soak 也达到 100/100；未见 `slots missing`、CUDA Graph 错误或
+HTTP 500。整机 telemetry 与原始归档见
+[优化阶段速览](tensorrt-optimization-summary.md#p2-同机并发对照2026-10-13)。
+该结论限于冻结 PS20；默认部署前仍需覆盖不同输入长度及图像 token 数。
 
 ## P3：paged KV cache
 
@@ -115,8 +117,8 @@ output throughput `40.9566 tok/s`；59 个采样点中 RAM 为 `5636--5656/7619 
 |---|---|---|
 | Builder/config | 已支持 `--maxKVPoolPages`，并将 `max_kv_pool_pages=32` 写入 paged engine config | 后续补齐 config 中显式的 layout/page-size 字段，并加入启动时一致性校验 |
 | ONNX/TensorRT Plugin | 已增加 `kv_page_table` binding、paged pool shape `[2,pages,128,Hkv,D]`、prefill gather 和 decode XQA page-list 路由 | 继续补充 Engine Inspector/Nsight 的 binding 与 kernel 参数证据 |
-| Runtime | 已连接 page pool、page table、KV 写入和 batch=1/4 的低层执行；dense engine 回归通过 | HTTP paged scheduler、跨 page 增长/释放日志和长 soak 仍待补齐 |
-| 运行验证 | paged engine 已成功 build；batch=1/4 prefill/decode 均 exit code 0，CUDA Graph capture 成功 | dense-vs-paged 数值 parity、HTTP paged path、100 次 soak 尚未完成 |
+| Runtime | 已连接 page pool、page table、KV 写入和 batch=1/4 低层执行；eviction KV compact 按 engine 布局选择步长，dense 回归通过 | 页分配/释放计数和长 soak 仍需补齐 |
+| 运行验证 | paged engine 已成功 build；batch=1/4 prefill/decode 均 exit code 0；最终分流版 HTTP c=1/4/1 各 3×20 完成，180/180 严格 JSON 有效且逐图原文一致 | 长输入 dense/paged 严格数值一致性、Nsight route 和 100 次 soak 未完成 |
 
 因此，单独把 plugin 中的 `usePagedKVCache` 改成 `true` 不能修复问题；本轮失败复验正是由
 ONNX cache 仍是 dense shape、plugin binding 数量不一致，以及 KV 写入 kernel 把 paged pool
@@ -133,7 +135,7 @@ ONNX cache 仍是 dense shape、plugin binding 数量不一致，以及 KV 写�
 因此本轮没有把 v0.10.x 文件直接复制到固定 v0.9.1 checkout，也没有把版本升级当成
 “修复 paged KV”。当前可验证结论是：v0.9.1 的 paged builder/plugin/runtime 低层路径已经
 闭环到可执行 engine，但尚未达到正式性能候选的全部质量门禁；后续仍需补齐数值 parity、
-HTTP paged scheduler、Nsight route 证据和长 soak。每层继续保留 contiguous engine 作为
+HTTP 并发输出完全一致性、Nsight route 证据和长 soak。每层继续保留 contiguous engine 作为
 control。
 
 ### 实施计划
@@ -230,6 +232,64 @@ v0.9.1 commit `7f061f2`、INT4 AWQ、`i768/k1024`、builder level 1、workspace 
 `The three primary colors are red` 和 `A **Transformer neural network**`；该结果证明
 paged engine 可以实际生成 token，但不是 dense-vs-paged 的数值 parity。输出证据见
 [`numerical_smoke_output.json`](../reports/tensorrt-priority/p3/paged-kv-20260923-formal/numerical_smoke_output.json)。
+
+### P3.6：2026-10-13 数值与 HTTP 并发复验
+
+同一批 dense/paged engine、tokenizer 和生成参数下，SDK 短 ragged batch=4 的
+4/4 输出在 dense→paged→dense 三段完全一致。长度为 8/232/517/682 token 的
+长 ragged batch=4 全部运行成功，但 paged 的 2/4 原文不同；单请求重试也复现
+其中差异。top-5 logprobs 显示首个分歧位置的候选 token 接近，例如短请求
+`street`/`paved` 的 paged logprob 只差 0.0156；这支持数值近似导致选择变化的
+解释，但不能证明全部 logits 一致。原始归档分别为
+`reports/jetson-readiness-20261012/p3_dense_paged_ragged_aba_artifacts.tgz`
+（SHA-256 `28ba8c1b6a9d677cb8860e03232d56e5ad74e90f9f8b6c29a8dc3dfbf9a17288`）、
+`p3_dense_paged_long_aba_artifacts.tgz`
+（`3844719ab2b6d572c889e3362191ec0ff981da57290afe6b1c7d764577dd5097`）和
+`p3_logprobs_probe_artifacts.tgz`
+（`7a9871a3d67f785eb244df8c2bb284f214d49915fa5ad83bd64e76a2c6de13a0`）。
+
+HTTP paged 单服务 PS20 c=1→4→1 各 20/20 完成，吞吐为
+`27.295→39.845→27.356 output tok/s`，但 c=4 有 5/20 原文哈希偏离 c=1。
+独立的原文诊断 c=1、c=4 各 20/20，其中 c=4 有 3 条输出不是有效 JSON，
+即“请求完成”不能作为质量通过。源码检查发现 KV pool 实际布局为
+`[K/V,batch,token,head,dim]`，eviction compact kernel 却按
+`[batch,K/V,head,token,dim]` 计算地址；这会在请求提前结束、存活请求迁移时
+复制错误的 KV。最初全局改用 NHD 步长虽消除了 paged 的 JSON 损坏，却令 dense
+c=4 有 8/20 条严格 JSON 无效，因此没有保留该全局改动。最终使用
+[`fix_edgellm_kv_compaction.py`](../scripts/fix_edgellm_kv_compaction.py) 按 engine
+配置的 `numPages` 分流：dense 保留原拷贝路径，仅 paged 使用 NHD 步长。
+补丁可从原源码逐字节回放，原源码及构建日志保存在板端独立实验目录。
+
+修复后同一 paged engine 再做单服务 c=1→4→1，各 20/20 完成，吞吐为
+`27.328→40.167→27.366 output tok/s`；从保留的原文回放，三段共 60/60
+通过 `ParkingAssessment` 严格校验，两侧 c=1 为 20/20 原文一致，c=4 与
+c=1 为 19/20 一致。唯一差异是 `ps20-indoor-001` 的证据描述措辞变化
+（94→95 tokens），仍是有效评估。修复前、后的原文诊断归档分别为
+`p3_paged_http_raw_aba_partial_artifacts.tgz`
+（SHA-256 `4f82ab96818eae661764dcfafc90de9881ccb3d477691f3ebebc476c5cca2daf`）和
+`p3_paged_http_compaction_fix_aba_artifacts.tgz`
+（`0b305d03c964b65a8eb04abbfbadd1d694da3c23c881a652bb6271a351493e91`）。
+最终分流版本的 dense engine 在同一服务 c=1→4→1 各 20/20 完成，60/60 严格
+JSON 有效，逐图原文哈希三段 20/20 一致；吞吐为
+`27.149→40.851→27.218 output tok/s`。原始归档
+`p2_dense_http_layout_select_aba_artifacts.tgz` 的 SHA-256 为
+`4f5f839aea3c2a720b76765029b10d5285915c132b5a16f2e1a10b90cad33830`；
+严格对照报告 `p2_dense_http_layout_select_aba_comparison.json` 的 SHA-256 为
+`7a6cde3a94912acc307e27c582d840e6cd7483063c470405ff7d4ac92849fd31`。
+在该初次修复轮次，paged 的严格原文 parity 尚未通过；后续使用最终分流版继续复验。
+
+最终分流版 paged engine 又在**同一服务进程**完成 PS20 c=1→4→1，每段 3×20
+请求、warm-up 1 次。三段均 60/60 完成，`assessment_valid` 均为 60/60，
+按 `(sample_id, repetition)` 比较的原文哈希及 token 数 60/60 完全一致。
+吞吐为 `27.349→40.200→27.348 output tok/s`，c=4 相对两侧 c=1 均值
+为 1.470 倍，两侧基线漂移 -0.005%。原始归档
+`p3_paged_http_layout_select_long_aba_artifacts.tgz` SHA-256 为
+`a89b9ae497998496d678ad9d20fddee8f906a7d8a0e026c47844bfeb8d543302`；
+严格对照报告 `p3_paged_http_layout_select_long_aba_comparison.json` SHA-256 为
+`46cf216f0a32353f7b470ab745359a01861a927f28bd8c8d8735dc3d79cc038e`。
+该结果闭环了冻结 PS20 的 HTTP 并发格式和原文一致性；此前单轮 1/20 的
+措辞差异没有在后续 180 请求中复现。长输入的 dense/paged 数值差异、
+paged kernel 路由证据及 100 请求 soak 仍是部署门禁，因此默认 engine 不变。
 
 ## 与当前实验矩阵的关系
 

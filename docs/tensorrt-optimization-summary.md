@@ -12,11 +12,16 @@
 2026-10-12 的冻结 PS20 同机测试中，旧 level1 的紧邻对照为 27.558 output tokens/s，
 INT4 Q/K/V 与 gate/up 融合、详细 profiling 重建的 engine 两次为 28.122 和
 28.178 output tokens/s；20 图输出逐样本完全一致。后一组 decode p50 为
-2059.90 ms，对照为 2110.59 ms。Nsight 显示 INT4 GPU event 合计缩短约
-67.08 ms/95 forward；`lm_head` 保持 Ampere GEMM tactic。未开启详细 profiling 的
+2059.90 ms，对照为 2110.59 ms。进一步使用同一独立 builder 重建未融合详细
+engine，得到 27.627 output tokens/s；融合候选相对它提升 1.79%–1.99%。
+同图 Nsight 显示 INT4 GPU event 合计缩短 66.37 ms/95 forward，
+`lm_head` 保持 Ampere GEMM tactic。未开启详细 profiling 的
 首次融合构建曾选择更慢的 GEMVX，20 图吞吐仅 26.869，已否决。详见
 [Jetson 实验证据](jetson-readiness.md)。timing cache 复用将同图构建从 113.17 秒
 缩短到 35.37 秒，不作为推理吞吐收益。
+同构建条件的 1000-step direct decode A-B-A 复验中，未融合为
+36.4928/36.5156 tokens/s，融合为 37.3506 tokens/s；三段均成功。
+这是纯 LLM 低层稳定性证据，完整 VLM 结论仍以上述 PS20 为准。
 
 ## P0-P3 执行顺序与验收边界
 
@@ -28,8 +33,8 @@ INT4 Q/K/V 与 gate/up 融合、详细 profiling 重建的 engine 两次为 28.1
 |---|---|---|---|
 | P0 | C++ direct runtime benchmark | [`run_edgellm_direct_benchmark.py`](../scripts/run_edgellm_direct_benchmark.py) 已实现命令、CSV、日志和 JSONL 归档；已在板端复验 | 同一 engine/workload 下分别采集 prefill/decode；不把 HTTP RTT 或 prefill 伪装成 TTFT |
 | P1 | `lm_head` / INT4 GEMV/GEMM | 已完成 Engine Inspector、Nsight 热点复核；候选 A/B 仍保留为隔离实验 | 候选必须完成 3 次低层 A/B、完整 VLM 和 soak；当前热点仍优先是大词表 FP16 `lm_head` GEMM 和 INT4 GEMV |
-| P2 | dynamic batching / continuous batching | 已修复 active-batch eviction、vanilla sampling indices 和空 batch compact；新增单 worker bounded native microbatch scheduler，统一流式/非流式 route；batch=1/4 低层 smoke 均 exit code 0 | c=2、c=4 各 60/60 成功，c=4 100 请求 soak 100/100 成功；aggregate output tok/s 分别为 `27.5115/41.0209/40.2069`；已补 telemetry，但因缺少同口径 baseline 暂不默认化 |
-| P3 | paged KV | 已完成最小 builder/plugin/runtime backport：`maxKVPoolPages`、page pool、`kv_page_table`、prefill gather、decode XQA page-list 和 KV 写入接线 | 独立 paged engine 已 build；batch=1/4 prefill/decode 均 exit 0 且 CUDA Graph capture 成功；数值 parity、HTTP paged path、Nsight route 和 100 次 soak 仍未完成，不替换默认 engine |
+| P2 | dynamic batching / continuous batching | 已修复 active-batch eviction、vanilla sampling indices 和空 batch compact；新增单 worker bounded native microbatch scheduler，统一流式/非流式 route；batch=1/4 低层 smoke 均 exit code 0 | c=2、c=4 各 60/60 成功，c=4 100 请求 soak 100/100 成功；同一服务的 c=1/4/1 各 60/60 成功且逐请求输出哈希一致，c=4 墙钟吞吐为两侧 c=1 均值的 1.474 倍；需验证更多请求形状和默认部署配置 |
+| P3 | paged KV | 已完成最小 builder/plugin/runtime backport；HTTP eviction KV compact 按 engine 布局分流，dense 路径保持原步长 | 最终分流版 HTTP c=1/4/1 各 3×20 完成，180/180 严格 JSON 有效且原文一致；长输入数值 parity、Nsight route 和 100 请求 soak 未完成，暂不替换默认 engine |
 
 P0 runner 的输出 JSONL 可以直接交给 `scripts/benchmark_edgellm.py` 汇总；它同时写出
 `.metadata.json`，保存每次命令、CSV 路径、完整日志路径、退出码和 warning。`llm_bench`
@@ -42,8 +47,8 @@ P2 sweep 只负责复用现有 HTTP benchmark，不把独立连接的吞吐自�
 |---|---|---|---|
 | P0 | level0/level1，各自 prefill/decode、3 次重复，`i768/k1024`、batch=1、CUDA Graph | level1 相对 level0：prefill `526.8768 -> 426.7482 ms`，降低 `19.0042%`；decode `126.7803 -> 27.4670 ms/token`，加速 `4.6157x` | direct C++ runtime benchmark 已完成；结果已归档 |
 | P1 | level1 non-Graph Nsight + Engine Inspector | `gemv_kernel` 占 kernel time `52.12%`，FP16 `lm_head` GEMM 占 `34.43%`，`kernel_mha` 占 `6.88%`；level1 fresh Inspector 未输出可解析 tactic 字段 | 热点已复核；没有新的稳定 GEMV/GEMM 候选晋级 |
-| P2 | 修复 max batch=4 engine 的 active-batch eviction，并增加 HTTP native microbatch scheduler；重编译 runtime/plugin 后复验 batch=1/4 与并发 | 低层 batch=1 `29.4693 ms`；batch=4 `43.7650 ms`，按 4 条序列折算 aggregate 约 `91.4 tok/s`；HTTP c=2 `60/60`、c=4 `60/60`、soak `100/100`，无 HTTP500/slot/graph race | 请求级 dynamic batching 已完成功能复验；`27.5115/41.0209/40.2069 tok/s` 是 HTTP aggregate 指标，不能替代低层 decode latency；已采集资源事实，但缺同口径 baseline，暂不默认化 |
-| P3 | 修复 ONNX dense-cache shape、AttentionPlugin binding、KV 写入维度和 page-table/runtime 接线；构建独立 `i768/k1024/level1/maxBatch4/maxKVPoolPages32` engine | 新 engine 做 3×20：paged batch=1 decode 均值 `857.7339 ms`；batch=4 decode 均值 `1342.0580 ms`，按 4 条序列折算 aggregate `92.4076 tok/s`；prefill batch=1/4 均值 `428.3120/1655.6338 ms`；batch=1/4 均 exit 0、Graph capture 成功；C++ batch=4 输出 smoke 4/4 成功；新 engine telemetry RAM 峰值 `5197 MB`、SWAP `1569 MB`、GR3D `99%`、`tj` `55.718 C`、VDD_IN `11588 mW` | paged 低层可执行性和实际 token 输出已核验；dense control 当前为不同 iteration 数的回归数据，不能宣称微小延迟差异为加速；等待 parity、HTTP paged scheduler、Nsight 和 soak 门禁 |
+| P2 | 修复 max batch=4 engine 的 active-batch eviction，并增加 HTTP native microbatch scheduler；重编译 runtime/plugin 后复验 batch=1/4 与并发 | 低层 batch=1 `29.4693 ms`；batch=4 `43.7650 ms`，按 4 条序列折算 aggregate 约 `91.4 tok/s`；HTTP c=2 `60/60`、c=4 `60/60`、soak `100/100`；新增单服务 PS20 c=1/4/1 各 3×20 对照及逐请求原文哈希 | 请求级 dynamic batching 已完成功能与同口径吞吐复验；`27.5115/41.0209/40.2069 tok/s` 是历史 HTTP aggregate 指标，新对照为 `27.259/40.169/27.261 tok/s`；尚需更多输入长度及默认部署门禁 |
+| P3 | 修复 ONNX shape、AttentionPlugin/page-table/KV 写入接线及按布局分流的 HTTP eviction KV 地址步长；构建独立 `i768/k1024/level1/maxBatch4/maxKVPoolPages32` engine | 低层 batch=1/4 均可执行，旧 3×20 decode 均值 `857.7339/1342.0580 ms`；短 ragged batch=4 为 4/4 原文一致，长 ragged 有 2/4 差异；最终分流版 dense c=1/4/1 原文 20/20 一致，paged 同机各 3×20 原文 60/60 一致且格式 180/180 有效 | 冻结 PS20 HTTP 并发门禁通过；长输入 dense/paged 严格 parity、Nsight route 和 100 请求 soak 未完成，不能宣称 paged 加速或替换默认 engine |
 
 P2 的 batch=4 engine 构建峰值为 GPU allocator `1617 MiB`、CPU allocator `5496 MiB`，engine
 SHA-256 为 `2502e35bf979dba95a2158a90b79d09551ea2a3638d423ef4207fdc5b154833a`。低层
@@ -53,6 +58,54 @@ aggregate throughput 则是多个请求的总输出 token 除以 steady-state wa
 和 `reports/tensorrt-priority/p2/`。一次伴随 `tegrastats` 的 c=4 运行记录 RAM
 `5636--5656/7619 MB`、SWAP `1555/3810 MB`、GR3D 峰值 `99%`、温度峰值 `58.187 C`、
 VDD_IN 峰值 `13680 mW`；因没有同口径 baseline telemetry，只作为资源事实归档。
+
+### P2 同机并发对照（2026-10-13）
+
+使用同一 batch=4 engine（SHA-256 `2502e35bf979dba95a2158a90b79d09551ea2a3638d423ef4207fdc5b154833a`）、
+同一服务源码/插件、15W 模式与冻结 PS20，固定服务端 `http_max_batch_size=4`、
+流式响应和 HTTP 连接复用，只改变客户端并发度 c=1→4→1。每段 warm-up 1 次、
+正式 20 次，均 20/20 成功；吞吐为 27.173→40.338→27.207 output tokens/s。
+c=4 相对两侧 c=1 均值为 1.484 倍；两侧基线漂移 0.13%。
+`run_edgellm_benchmark.py` 现记录输出原文 SHA-256，
+`compare_edgellm_concurrency_runs.py` 校验样本、重复次数、token 数和原文哈希；
+20/20 张图三段完全一致，不保存原文到性能 JSONL。新运行还会记录每条输出
+是否通过 `ParkingAssessment` 严格 JSON 校验、运行级有效率；对照器在该字段存在时
+将无效评估视为门禁失败。旧归档没有这个字段，不能追溯声明其严格 JSON 有效率。
+
+第三段首次启动曾在 120 秒健康检查期限内超时，服务日志为空、GPU 使用率为 0%；
+独立补测 c=1 后完成上述对照。两次有效 c=1 分属不同 SSH 作业，不能称为
+同一连续服务进程的严格 A-B-A。另一个尝试将服务端上限设为 1、却沿用 batch=4
+engine 的对照触发 `CosSinCache` 批大小错误和 HTTP 500，已排除在性能计算外。
+原始归档分别为 `reports/jetson-readiness-20261012/p2_concurrency_output_hash_partial_artifacts.tgz`
+（SHA-256 `04e1d46f2eb2f1fd58b9c24ec492d4af1f03e4ef25dea98abcf163eb007bbd32`）
+和 `p2_concurrency_output_hash_return_artifacts.tgz`
+（SHA-256 `e42a822888da2c77ea3bb9bc2ac2207453d6a623a2dcb8672de8a809176c5e50`）。
+比较报告 `p2_concurrency_output_hash_comparison_v2.json` 的 SHA-256 为
+`0b6c83e57fe701f3eb73dc5d0c812902294af5abcd9d37954a8c98ed0e698d3d`。
+本次单轮 20 图对照证明当前配置的吞吐与输出一致性；长期稳定性仍以已完成的
+c=4 100 请求 soak 为独立证据。
+
+随后在**同一服务进程**中做更长的 c=1→4→1，各 3×20 正式请求、每段 1 次
+warm-up；engine、插件、服务源码、runner、负载和 15W 模式均保持相同。
+三段均 60/60 成功，逐个 `(sample_id, repetition)` 的输出 SHA-256 与 token
+数完全一致。墙钟吞吐为 **27.259→40.169→27.261 output tokens/s**；
+c=4 相对两侧 c=1 均值提升 **47.36%**，基线漂移 0.008%。服务日志无
+HTTP 500 或 CUDA 错误。全程 tegrastats 951 个采样，整机 RAM 峰值
+5662/7619 MB、SWAP 峰值 1651/3810 MB、平均瞬时 `VDD_IN` 12.34 W、
+结温峰值 60.0 °C；这些是整机采样，不是进程峰值或逐请求能耗。
+原始归档 `p2_concurrency_output_hash_long_artifacts.tgz` 的 SHA-256 为
+`1f1da408c5dfaa8680d1f907fcd5f2805df13416f3094308253f24ff8d74fc0a`；
+严格对照报告 `p2_concurrency_output_hash_long_comparison.json` 的 SHA-256 为
+`f1dbfe7a52129399e21e12463d07a5deec0705ee34068b68ceba8608b973cfc2`。
+该结果支持冻结 PS20 上的请求级微批收益。默认部署前还需核验不同长度和图像
+token 数的负载。`serve_edgellm.py` 的 CLI 现在从 LLM engine 的
+`builder_config.max_batch_size` 推导默认 HTTP 调度上限；显式不匹配会在
+`--check-only` 或 GPU 加载前报错。真实 Jetson batch=4 engine 的只读检查中，
+省略参数得到 4，显式传 1 被拒绝；独立脚本副本不传参数启动后，PS20 c=4
+20/20 成功、输出哈希与原服务逐样本一致，运行元数据记录 4/4。
+原始归档 `p2_batch_inferred_smoke_artifacts.tgz` SHA-256 为
+`eeca00a314dd8f4dce46f67ed3f40c316db99888f564203a6caaf6fc234e213f`。
+板端默认 checkout 未被替换；部署时仍需使用经过验证的新入口，并核验更广的请求形状。
 
 板端执行入口示例（路径按板端实际安装位置替换）：
 

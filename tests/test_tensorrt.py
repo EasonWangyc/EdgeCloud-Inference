@@ -33,7 +33,7 @@ from scripts.compare_tensorrt_benchmarks import compare_benchmarks
 from scripts.compare_tensorrt_study_reports import compare_study_reports
 from scripts.benchmark_edgellm import main as benchmark_edgellm_main
 from scripts.record_engine_provenance import main as record_engine_provenance_main
-from scripts.run_edgellm_benchmark import benchmark, run_sample
+from scripts.run_edgellm_benchmark import _assessment_valid, benchmark, run_sample
 from scripts.summarize_edgellm_runtime_log import (
     compare_summaries,
     summarize_log,
@@ -1235,10 +1235,58 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
 
         self.assertEqual(row["status"], "completed")
         self.assertEqual(row["decode_tokens"], 3)
+        self.assertEqual(row["output_sha256"], hashlib.sha256(b"{}").hexdigest())
+        self.assertFalse(row["assessment_valid"])
         self.assertEqual(row["timings_ms"]["decode_ms"], 20.0)
         self.assertEqual(row["timings_ms"]["http_round_trip_ms"], 25.0)
         self.assertEqual(row["timings_ms"]["time_to_first_token_ms"], 12.0)
         self.assertGreater(row["timings_ms"]["end_to_end_ms"], 0.0)
+
+    def test_low_level_runner_checks_strict_assessment_without_raw_output(self) -> None:
+        valid = {
+            "schema_version": "parking_risk_v1",
+            "risk_level": "low",
+            "events": [],
+            "evidence": ["parking space is clear"],
+            "driver_advice": ["maintain_observation"],
+        }
+        self.assertTrue(_assessment_valid(json.dumps(valid)))
+        self.assertFalse(_assessment_valid(json.dumps({**valid, "extra": 1})))
+        self.assertFalse(_assessment_valid('{"schema_version":'))
+
+    def test_low_level_runner_accepts_legacy_generation_without_decode_count(self) -> None:
+        from types import SimpleNamespace
+        from parksight_vlm.inference.runtime import StageTimings
+
+        class LegacyBackend:
+            def generate(self, *, image_path: Path, workload: object) -> object:
+                return SimpleNamespace(
+                    raw_output='{"risk_level":"low"}',
+                    stage_timings=StageTimings(http_round_trip_ms=15.0),
+                    output_tokens=5,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "image.jpg").write_bytes(b"test")
+            parking_case = ParkingCase(
+                case_id="case-legacy",
+                image_ref=PurePosixPath("image.jpg"),
+                source_group_id="group-legacy",
+                split=DatasetSplit.TEST,
+                reference_assessment=None,
+            )
+            row = run_sample(
+                backend=LegacyBackend(), case=parking_case, workload=object(),
+                data_root=root, repetition=1,
+            )
+
+        self.assertEqual(row["status"], "completed")
+        self.assertIsNone(row["decode_tokens"])
+        self.assertEqual(
+            row["output_sha256"],
+            hashlib.sha256(b'{"risk_level":"low"}').hexdigest(),
+        )
 
     def test_low_level_runner_persists_failed_warmup_before_aborting(self) -> None:
         class FailingBackend:
@@ -1337,6 +1385,8 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
         self.assertGreaterEqual(len(created), 1)
         self.assertEqual(run_stats["steady_state_requests"], 4)
         self.assertEqual(run_stats["steady_state_completed_requests"], 4)
+        self.assertEqual(run_stats["steady_state_valid_assessments"], 0)
+        self.assertEqual(run_stats["assessment_valid_rate"], 0.0)
         self.assertEqual(run_stats["steady_state_output_tokens"], 8)
         self.assertGreater(run_stats["aggregate_output_tokens_per_second"], 0.0)
 
