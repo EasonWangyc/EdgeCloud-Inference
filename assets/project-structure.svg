@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 490" role="img" aria-labelledby="title desc">
+  <title id="title">EdgeCloud-Inference project structure</title>
+  <desc id="desc">The repository contains the core Python package, configuration, data, scripts, tests, documentation, dependencies, and local outputs.</desc>
+  <rect width="1160" height="490" rx="22" fill="#f8fafc"/>
+  <text x="40" y="52" fill="#0f172a" font-family="Arial, sans-serif" font-size="28" font-weight="700">项目结构</text>
+  <text x="40" y="77" fill="#475569" font-family="Arial, sans-serif" font-size="14">可提交的源码与配置 · 本地输入与实验产物</text>
+
+  <rect x="40" y="102" width="530" height="201" rx="16" fill="#ffffff" stroke="#93c5fd" stroke-width="2"/>
+  <rect x="40" y="102" width="530" height="46" rx="16" fill="#dbeafe"/>
+  <rect x="40" y="132" width="530" height="16" fill="#dbeafe"/>
+  <text x="62" y="132" fill="#1e3a8a" font-family="Arial, sans-serif" font-size="19" font-weight="700">src/parksight_vlm/</text>
+  <text x="62" y="174" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">assessment/   JSON 与语义校验</text>
+  <text x="62" y="203" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">casebook/      样本、标注、数据集划分</text>
+  <text x="62" y="232" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">inference/     Transformers · vLLM · Edge-LLM</text>
+  <text x="62" y="261" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">studies/         指标与 StudyReport</text>
+  <text x="62" y="290" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">app/               单图分析与研究入口</text>
+
+  <rect x="590" y="102" width="530" height="201" rx="16" fill="#ffffff" stroke="#c4b5fd" stroke-width="2"/>
+  <rect x="590" y="102" width="530" height="46" rx="16" fill="#ede9fe"/>
+  <rect x="590" y="132" width="530" height="16" fill="#ede9fe"/>
+  <text x="612" y="132" fill="#5b21b6" font-family="Arial, sans-serif" font-size="19" font-weight="700">configs/</text>
+  <text x="612" y="174" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">workloads/   冻结提示词与输出契约</text>
+  <text x="612" y="203" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">studies/       运行时与评测配置</text>
+  <text x="612" y="232" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">flows/          训练、导出、量化与构建</text>
+  <text x="612" y="261" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">training/ · data/ · tensorrt/</text>
+
+  <rect x="40" y="323" width="345" height="132" rx="16" fill="#ffffff" stroke="#86efac" stroke-width="2"/>
+  <text x="62" y="356" fill="#166534" font-family="Arial, sans-serif" font-size="19" font-weight="700">data/</text>
+  <text x="62" y="390" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">manifests/ · annotations/</text>
+  <text x="62" y="419" fill="#475569" font-family="Arial, sans-serif" font-size="16">raw/ · processed/（本地）</text>
+
+  <rect x="407" y="323" width="345" height="132" rx="16" fill="#ffffff" stroke="#fcd34d" stroke-width="2"/>
+  <text x="429" y="356" fill="#92400e" font-family="Arial, sans-serif" font-size="19" font-weight="700">执行与文档</text>
+  <text x="429" y="390" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">scripts/ · tests/ · docs/</text>
+  <text x="429" y="419" fill="#475569" font-family="Arial, sans-serif" font-size="16">requirements/</text>
+
+  <rect x="774" y="323" width="346" height="132" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="796" y="356" fill="#334155" font-family="Arial, sans-serif" font-size="19" font-weight="700">本地产物</text>
+  <text x="796" y="390" fill="#0f172a" font-family="Arial, sans-serif" font-size="16">artifacts/ · reports/ · models/</text>
+  <text x="796" y="419" fill="#475569" font-family="Arial, sans-serif" font-size="16">生成内容；Git 忽略</text>
+</svg>
