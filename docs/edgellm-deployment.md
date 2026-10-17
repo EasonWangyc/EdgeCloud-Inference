@@ -12,8 +12,8 @@
 | 精度 | LLM FP16、视觉编码器 FP16 |
 | Jetson 平台 | Orin Nano、JetPack 6.2.2、CUDA 12.6 |
 | 工作负载 | `configs/workloads/parking_risk_v1.json` |
-| 板端对照配置 | `configs/studies/jetson_transformers_fp16_ps20_pilot.json` |
-| Edge-LLM 配置 | `configs/studies/jetson_edgellm_fp16_ps20_pilot.json` |
+| 板端对照配置 | `configs/studies/jetson/jetson_transformers_fp16_ps20_pilot.json` |
+| Edge-LLM 配置 | `configs/studies/jetson/jetson_edgellm_fp16_ps20_pilot.json` |
 
 两个板端 Study 必须使用相同的模型 revision、工作负载、PS2.0 样本、功耗模式和生成上限。Edge-LLM 的 engine 只服务于上述 Edge-LLM revision、TensorRT 版本和构建参数；任一项变化都重新构建，不复用旧 engine。
 
@@ -83,10 +83,10 @@ hf download Qwen/Qwen3-VL-2B-Instruct \
 
 ```bash
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_fp16.json
+  --config configs/flows/export/export_qwen3_vl_2b_fp16.json
 
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_fp16.json \
+  --config configs/flows/export/export_qwen3_vl_2b_fp16.json \
   --execute
 ```
 
@@ -193,10 +193,10 @@ LLM 与视觉 engine 使用独立 flow，避免其中一个失败时覆盖另一
 ```bash
 cd /home/ubuntu/JetsonVLM
 PYTHONPATH=src .venv-jetson/bin/python scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_fp16_visual_engine.json
+  --config configs/flows/build/build_qwen3_vl_2b_fp16_visual_engine.json
 
 PYTHONPATH=src .venv-jetson/bin/python scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_fp16_visual_engine.json \
+  --config configs/flows/build/build_qwen3_vl_2b_fp16_visual_engine.json \
   --execute
 ```
 
@@ -204,10 +204,10 @@ PYTHONPATH=src .venv-jetson/bin/python scripts/build_engine.py \
 
 ```bash
 PYTHONPATH=src .venv-jetson/bin/python scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_fp16_llm_engine_i768_k1024.json
+  --config configs/flows/build/build_qwen3_vl_2b_fp16_llm_engine_i768_k1024.json
 
 PYTHONPATH=src .venv-jetson/bin/python scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_fp16_llm_engine_i768_k1024.json \
+  --config configs/flows/build/build_qwen3_vl_2b_fp16_llm_engine_i768_k1024.json \
   --execute
 
 ln -s ../qwen3_vl_2b_fp16/visual \
@@ -293,7 +293,7 @@ HTTP 推理响应。所有推理请求串行准入，排队会增加 HTTP TTFT�
 
 ```bash
 PYTHONPATH=src .venv-jetson/bin/python -m parksight_vlm.app.run_study \
-  --config configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json
+  --config configs/studies/jetson/jetson_edgellm_int4_serial_stages_ps20_pilot.json
 ```
 
 2026-10-09 已在独立板端目录完成该配置的 PS20 全部 20 张图片，阶段覆盖与原始
@@ -330,7 +330,7 @@ PYTHONPATH=src .venv-jetson/bin/python -m parksight_vlm.app.analyze_image \
 
 ```bash
 PYTHONPATH=src .venv-jetson/bin/python -m parksight_vlm.app.run_study \
-  --config configs/studies/jetson_edgellm_fp16_ps20_pilot_promptfix.json
+  --config configs/studies/jetson/jetson_edgellm_fp16_ps20_pilot_promptfix.json
 ```
 
 最终报告为 `reports/jetson_edgellm_fp16_ps20_pilot_promptfix_i768_k1024.json`。只有该报告与`reports/jetson_transformers_fp16_ps20_pilot.json` 使用相同 workload identity、样本和功耗模式时，才计算加速比和质量差异。
@@ -340,7 +340,7 @@ PYTHONPATH=src .venv-jetson/bin/python -m parksight_vlm.app.run_study \
 可复现摘要命令：
 
 ```bash
-PYTHONPATH=src python scripts/summarize_jetson_study.py \
+PYTHONPATH=src python scripts/diagnostics/summarize_jetson_study.py \
   --study-report reports/jetson_edgellm_fp16_ps20_pilot_promptfix_i768_k1024.json \
   --tegrastats reports/runtime/tegrastats_promptfix_i768_k1024_20sample_20260812.log \
   --output reports/jetson_edgellm_fp16_ps20_pilot_promptfix_i768_k1024.runtime-summary.json

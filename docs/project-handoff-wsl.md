@@ -57,7 +57,7 @@ P2 已在板端完成 c=2/c=4 各 60/60 和 c=4 的 100/100 HTTP soak，并补�
 
 - [架构与路由语义](architecture.md)、[运行入口和配置说明](operations.md)
 - [vLLM Adapter](../src/parksight_vlm/inference/vllm.py)、[端云路由实现](../src/parksight_vlm/inference/routing.py)
-- [云侧 study 模板](../configs/studies/server_vllm_http_ps20_pilot.example.json)、[端云 study 模板](../configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json)
+- [云侧 study 模板](../configs/studies/server/server_vllm_http_ps20_pilot.example.json)、[端云 study 模板](../configs/studies/jetson/jetson_edge_vllm_router_ps20_pilot.example.json)
 - [TensorRT 性能与候选边界](tensorrt-optimization-summary.md)、[数据集与 LoRA 方案](dataset-and-finetuning-roadmap.md)
 
 ## 2026-10-03 迁移执行记录

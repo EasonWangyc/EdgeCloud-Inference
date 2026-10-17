@@ -55,10 +55,12 @@ Jetson Transformers FP16 如果无法加载、发生 OOM 或依赖不兼容，�
 - 质量指标只对成功解析的记录计算；性能指标对已返回 `raw_output` 的后端完成记录计算，
   因为 JSON 解析失败不应抹掉已经发生的推理耗时。未返回模型输出的记录不进入性能分位数。
 - 每个实际采集到的阶段分别计算 p50、p90、p99。
-- 首个成功执行的端到端时延记为 cold start。
-- `tokens_per_second` 只在 runtime 同时报告 output tokens 与 decode latency 时计算，表示
-  decode-only tokens/s；`aggregate_output_tokens_per_end_to_end_second` 使用全部后端完成记录
- 计算，表示端到端链路的聚合输出速率，不能替代 decode-only tokens/s。
+- `first_request_ms` 保存首条记录已有的端到端时延；没有单独测量初始化时，
+  `cold_start_ms` 保持 `null`。
+- 历史字段 `tokens_per_second` 使用同时报告 output tokens 与 decode latency 的记录；
+  `aggregate_output_tokens_per_end_to_end_second` 仅在全部后端完成记录的输出计数和
+  端到端时延都齐全时计算。前者不能称为精确 decode-only tokens/s，后者的分母是
+  逐请求耗时之和，不能作为并发服务吞吐。
 - 峰值内存和峰值温度取最大值，平均功耗对已采集记录取算术平均。
 - 未被 runtime 实际测量的指标保持 `null`，不使用估算值补齐。
 - Transformers profile 可记录 `vision_encode_ms`、`prefill_ms`、`decode_ms` 和

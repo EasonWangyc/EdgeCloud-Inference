@@ -3,11 +3,16 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
-.venv/
-.venv-vllm/
+.venv*/
 *.egg-info/
 .migration/
 .casebook-test-tmp/
+
+# Local credentials and machine-specific config copies
+.env
+.env.*
+!.env.example
+configs/**/*.local.json
 
 # Local inputs and generated artifacts
 data/raw/

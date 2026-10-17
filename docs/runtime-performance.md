@@ -25,14 +25,16 @@
 SSE 片段可能包含多个 token，也可能因解码缓冲而延迟，因此片段数量不是输出 token
 数量。TPOT 使用 usage 中的 token 数；缺少 usage、只有一个 token 或只有一个文本
 事件时保持 null。usage 可能包含不可见结束 token，客户端 TPOT 是估计，不能替代
-服务端算子时间。角色、空文本、usage 和 `[DONE]` 事件不计入文本事件。
+服务端算子时间。角色、空文本、usage 和 `[DONE]` 事件不计入文本事件；流中没有
+非空文本时，客户端 TTFT 保持 null，不用服务端 TTFT 代填。
 
 逐样本保存服务端 `prompt_tokens` 和 `completion_tokens`。`token_counts` 同时保存
 usage 覆盖条数；不能把缺失 usage 的总数解释为真实零 token。墙钟窗口包含失败请求
 和客户端执行开销，排除预热及后续环境采集、报告落盘。它适用于将来的并发汇总。
-旧字段 `aggregate_output_tokens_per_end_to_end_second` 使用逐请求耗时之和，保留兼容，
-不能当作并发负载下的服务吞吐。历史 `tokens_per_second` 使用全部输出 token
-数归一化 `decode_ms`；它不保证剔除了 prefill 产出的首 token，不能当作精确
+旧字段 `aggregate_output_tokens_per_end_to_end_second` 仅在全部后端完成记录都有
+输出 token 数和端到端时延时计算，分母使用逐请求耗时之和；它不能当作并发负载下
+的服务吞吐。历史 `tokens_per_second` 使用具备输出计数与 decode 时延的记录
+归一化；它不保证剔除了 prefill 产出的首 token，不能当作精确
 decode token 吞吐。缺少阶段计时仍保持 null；新研究使用明确计数的
 `decode_tokens_per_second`，并保留历史字段。
 
@@ -69,7 +71,7 @@ token、115 次语言模型 forward，decode 计数为 114，阶段总时间为 
 ## TensorRT 低层 benchmark 指标
 
 Edge-LLM HTTP Adapter 默认 `image_preprocessing="source"`，保留已有实验的原图路径。
-新板端配置 `configs/studies/jetson_edgellm_fp16_workload_resize_ps20_pilot.json`
+新板端配置 `configs/studies/jetson/jetson_edgellm_fp16_workload_resize_ps20_pilot.json`
 显式使用 `workload_resize`：客户端按冻结尺寸生成 RGB bicubic PNG，直到 HTTP
 响应结束才删除临时目录。图片解码、缩放、编码和临时文件准备纳入
 `preprocess_ms`、客户端总 TTFT 及调用方端到端计时；HTTP TTFT 和服务端阶段时间
@@ -91,6 +93,11 @@ JSONL 的可选 `decode_tokens`。汇总只配对同一条 completed 记录中�
 `steady_state_valid_assessments` 和 `assessment_valid_rate` 只以完成请求为分母。
 原文仍不写入常规性能 JSONL；`compare_edgellm_concurrency_runs.py` 在该字段存在时
 将无效评估判为对照失败。
+诊断模式可额外写出 `raw_output` 和 `output_sha256`；
+`benchmark_edgellm.py` 校验原文哈希与 `assessment_valid` 标志是否符合严格 JSON
+契约，但不把原文写入汇总。汇总的
+`execution.assessment_validity` 及每次重复的同名字段统计已核验的完成请求；
+旧记录或部分记录缺少 `assessment_valid` 时，`valid_rate` 为 `null`，不推断有效率。
 
 低层 JSONL 的历史 `decode_tokens_per_second` 仍表示完整 output token 数除以
 decode 时间；新增 `measured_decode_tokens_per_second` 使用明确的 decode 计数。
@@ -137,7 +144,7 @@ HTTP 往返 12.688 秒，客户端 TPOT 估计 126.44 ms。候选绑定通过显
 ### Edge-LLM native Timer 桥接准备
 
 已核验的 C++ Timer 记录 CUDA event 时间，现有 Python binding 尚未暴露其数据。
-`scripts/prepare_edgellm_timing_binding.py` 生成绑定源码身份的补丁，准备导出每个
+`scripts/experiments/prepare_edgellm_timing_binding.py` 生成绑定源码身份的补丁，准备导出每个
 原始 stage ID 的 `total_gpu_time_ms` 和 `run_count`。这些值是累计值，不是逐请求
 报告；必须在 worker 全部停止执行时读取，且开启实际 profiling 才可能有数据。
 在独占、串行验收中核对快照、stage 名称及包围范围后，才可映射为报告阶段字段。
@@ -149,7 +156,7 @@ HTTP 往返 12.688 秒，客户端 TPOT 估计 126.44 ms。候选绑定通过显
 补丁、准备记录和验证结果保存在
 `reports/jetson-readiness-20261008/native_stage_timing_binding.patch` 及相关 JSON。
 
-板端单图诊断入口为 `scripts/run_edgellm_native_probe.py`，默认不执行模型；
+板端单图诊断入口为 `scripts/experiments/run_edgellm_native_probe.py`，默认不执行模型；
 显式执行时保存候选绑定、engine、workload 和输入身份，以及初始化失败事实。
 其流式 TTFT 不包含 HTTP 传输，不能填写 HTTP TTFT 字段。FP16 本轮在视觉 engine
 加载阶段 OOM，没有生成结果；不补填 token 数或阶段时间。已有 INT4 引擎可完成
@@ -193,7 +200,7 @@ prefill、decode 为 166.30/426.48/12020.47 ms，HTTP TTFT 629.84 ms。
 
 ### 冻结 PS20 串行阶段 study
 
-2026-10-09 使用 `configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，
+2026-10-09 使用 `configs/studies/jetson/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，
 已有 INT4 i768/k1024 LLM 与 FP16 视觉产物、候选 binding、15W mode 0，执行
 标准 StudyRunner：20 张图片各一次、448×448 RGB PNG、greedy、最多 256 token，
 模型已加载且无独立预热。保留 profiling 与每请求 SSE 落盘开销，不作为未插桩基线。
@@ -234,7 +241,7 @@ prefill、decode 为 166.30/426.48/12020.47 ms，HTTP TTFT 629.84 ms。
 
 ```bash
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_workload_resize_ps20.json \
+  --config configs/studies/wsl/wsl_vllm_workload_resize_ps20.json \
   --output reports/vllm-wsl/新的运行名.json \
   --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
@@ -243,13 +250,20 @@ prefill、decode 为 166.30/426.48/12020.47 ms，HTTP TTFT 629.84 ms。
 benchmark 独立完成预热，在正式运行前后保存 `.metrics.before.prom` 和
 `.metrics.after.prom`。`.server_metrics.json` 对累积计数和直方图作窗口差分，
 提供服务端 TTFT、ITL、逐请求 TPOT、排队、prefill、decode 和 E2E 的观察数量及
-均值，并保留全部桶差分。缺失指标保持 null；计数回退将窗口标记为无效。
+均值，并保留全部桶差分。缺失指标保持 null；进程启动时间变化、累积序列回退或
+在结束快照中消失时，将窗口标记为无效。
 这里没有生成精确服务端 p50/p90/p99，直方图只能支持桶分辨率下的估计。
 
 服务端统计是全局窗口，要求服务没有其他请求、窗口内不重启，并检查成功请求计数
-与正式实验是否一致。服务端窗口吞吐包含 HTTP 之外的报告及采集开销，与客户端
+与正式实验是否一致。输出 token 对照还要求每条完整返回的请求都有客户端 usage；
+覆盖不全时保存 `output_token_count_matches_client=null`，并将该窗口标记为不一致，
+不把已知 token 的部分和误当成全量。服务端窗口吞吐包含 HTTP 之外的报告及采集开销，与客户端
 执行窗口分别报告。均值不是单张图片的精确阶段记录；不回填逐请求 `decode_ms`。
 GPU 遥测仍为设备级每秒采样，不能捕获全部瞬时峰值。
+使用 `--gpu-telemetry` 时，执行记录保存总采样行数、正式 Study 窗口内的采样行数及窗口时间。有效覆盖要求首末样本分别距窗口起止不超过 3 秒，且窗口内至少有 `max(1, floor(窗口秒数 / 3))` 条有效样本；监控进程提前退出或覆盖不足时，本轮 benchmark 标记为失败。收尾时若监控进程未在 10 秒内响应终止信号，会强制结束并记录 `gpu_telemetry_forced_stop`，同时关闭 CSV 文件。
+CSV 解析按表头识别字段，兼容历史 5 列和当前扩展采样列；时间戳按本机时区与正式窗口比较。
+内存、GPU 利用率、功耗和温度含 `N/A` 或非有限值的行不计为有效样本。
+正式运行前探测扩展字段支持情况；若不可用，改用内存、利用率、功耗、温度等基础字段。两组查询均不可用时停止正式 Study，并在执行记录中写入 `gpu_telemetry_unavailable`。
 
 ## 并发测试含义
 
@@ -269,12 +283,12 @@ benchmark CLI 使用 `--concurrency 1`、`2` 或 `4` 选择客户端并发数。
 
 ```bash
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_eager_seq1_concurrency2_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_eager_seq1_concurrency2_ps20_repeat3.json \
   --concurrency 2 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_eager_seq1_concurrency4_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_eager_seq1_concurrency4_ps20_repeat3.json \
   --concurrency 4 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```
@@ -429,13 +443,13 @@ bash scripts/serve_vllm_wsl_batch.sh 4
 
 ```bash
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_batch_seq4_concurrency4_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_batch_seq4_concurrency4_ps20_repeat3.json \
   --concurrency 4 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```
 
 已有证据时必须通过 `--output` 指定新文件。100 次复验配置为
-`configs/studies/wsl_vllm_batch_seq4_concurrency4_ps20_soak100.json`。
+`configs/studies/archive/wsl_vllm_batch_seq4_concurrency4_ps20_soak100.json`。
 当前 decode Graph 脚本只捕获 batch=1，尚不能当作多序列 Graph 优化证据；
 输出重复性和多序列 Graph 是后续独立研究项。
 
@@ -460,7 +474,7 @@ eager、固定版本和冻结工作负载。默认启动入口不启用此模式
 bash scripts/serve_vllm_wsl_invariant.sh
 # 另一终端；分别用 concurrency1/2/4 配置及 --concurrency 1/2/4
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_invariant_seq4_concurrency4_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_invariant_seq4_concurrency4_ps20_repeat3.json \
   --concurrency 4 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```
@@ -522,7 +536,7 @@ Graph 与 eager 前测有 8/60 条 assessment 变化，涉及证据 7 条、建�
 bash scripts/serve_vllm_wsl_batch_graph.sh
 # 另一终端；已有报告时用 --output 指定新文件
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_batch_graph_graph_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_batch_graph_graph_ps20_repeat3.json \
   --concurrency 4 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```
@@ -532,7 +546,7 @@ sidecar、独立服务日志、`server_profiles.json`、`summarize_graph.py` 和
 `graph_comparison.json`（包含完整输出差异）。此目录被 Git 忽略，需单独保存。
 
 同配置重启后完成独立 100 次四并发复验，使用
-`configs/studies/wsl_vllm_batch_graph_soak100.json`：100/100 成功、
+`configs/studies/archive/wsl_vllm_batch_graph_soak100.json`：100/100 成功、
 189.144 tokens/s、2.317 requests/s，HTTP TTFT p50 / p90 / p99 为
 53.77 / 68.47 / 109.05 ms，E2E p50 / p90 / p99 为
 1.578 / 2.215 / 2.362 秒。零抢占、无 OOM 或超时，服务端计数与客户端一致。
@@ -556,14 +570,16 @@ sidecar、独立服务日志、`server_profiles.json`、`summarize_graph.py` 和
 `/server_info?config_format=json`。benchmark 新增可选 `--server-info-url`：
 保存模型 revision、精度、缓存、调度、并行与 Graph 配置的前后快照，
 不保存 HF token 等未选择字段；同时记录 benchmark 脚本哈希。
-快照不一致时 execution 标为失败、命令返回 2。已有 sidecar 时拒绝覆盖。
-未提供此参数或字段缺失时，不推定服务端采用默认值。
+正式测量前要求服务端 revision 与 Study 配置完全一致，dtype 与声明精度一致
+（例如 `torch.bfloat16` 对应 `bf16`）。字段缺失或不符时记录
+`server_identity_unverified` 并停止；测量后快照变化也使 execution 失败。
+已有 sidecar 时拒绝覆盖。未提供此参数时不宣称已核验服务端身份。
 
 ```bash
 bash scripts/serve_vllm_wsl_no_reuse.sh graph
 # 另一终端；eager 前/后测使用对应 eager 配置与启动参数
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_no_reuse_graph_ps20_repeat3.json \
+  --config configs/studies/archive/wsl_vllm_no_reuse_graph_ps20_repeat3.json \
   --concurrency 4 --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics \
   --server-info-url 'http://127.0.0.1:8000/server_info?config_format=json'
@@ -663,9 +679,11 @@ profiling，不表示完全无插桩。新服务进程到健康检查成功的�
 
 ## Nsight GPU / API 归因口径
 
-Nsight CSV 汇总使用 `parksight_cuda_kernel_names_v2`，新增 FP16 GEMM 分类及
+当时的 Nsight CSV 汇总使用 `parksight_cuda_kernel_names_v2`，新增 FP16 GEMM 分类及
 Edge-LLM INT4 WoQ GEMV 符号识别，避免 GEMV 被漏入 other_kernel。报告记录
 分类版本和执行脚本哈希；新旧分类不能直接比较，须用同版本重算两份原始 CSV。
+当前 v5 分类还将 Edge-LLM decode XQA 的通用名称 `kernel_mha` 归入 `attention_xqa`；
+该名称本身无法区分 dense/paged，需要结合配置、源码和 trace 的资源指纹。
 API trace 不能当作 GPU trace 输入，NaN/Inf duration 被拒绝。
 
 2026-10-12 单图显式 capture range 中直接观测 94 次 Graph launch 和
@@ -705,7 +723,7 @@ decode token 和 failure；未知 token 不等于已验证一致。输出变化�
 将完整证据包里的 StudyReport 提取为两个 JSON 文件后执行：
 
 ```bash
-python scripts/compare_tensorrt_study_reports.py \
+python scripts/diagnostics/compare_tensorrt_study_reports.py \
   --baseline reports/jetson-readiness-20261012/level_comparison_baseline_report.json \
   --candidate reports/jetson-readiness-20261012/level_comparison_candidate_report.json \
   --output reports/jetson-readiness-20261012/level_comparison-review.json
@@ -726,7 +744,7 @@ INT4 WoQ GEMV 总时长仍约 1335 ms，占 level1 全部 kernel event 时长的
 一致。汇总分类采用 v3，两份 CSV 必须重算后比较。复查关联的命令为：
 
 ```bash
-python scripts/analyze_edgellm_nsight_replay.py \
+python scripts/diagnostics/analyze_edgellm_nsight_replay.py \
   --sqlite reports/jetson-readiness-20261012/nsight-level1-artifacts/generation.sqlite \
   --probe reports/jetson-readiness-20261012/nsight-level1-artifacts/probe.json \
   --output reports/jetson-readiness-20261012/replay-review.json
@@ -771,11 +789,11 @@ trace 中，94 次 Graph replay 各自的 kernel 数为 452 与 368；INT4 类
 GPU event 总和从 1598.01 降至 1531.64 ms。trace 的 GPU event 总和
 不是 PS20 端到端时延，完整构建与实验身份见[验收记录](jetson-readiness.md)。
 
-`scripts/summarize_jetson_tegrastats.py` 将 Jetson 的 tegrastats 日志按
+`scripts/diagnostics/summarize_jetson_tegrastats.py` 将 Jetson 的 tegrastats 日志按
 StudyReport 请求时间窗截取，生成独立系统资源摘要。例如：
 
 ```bash
-python scripts/summarize_jetson_tegrastats.py \
+python scripts/diagnostics/summarize_jetson_tegrastats.py \
   --tegrastats reports/jetson-readiness-20261012/ps20-tegrastats-artifacts/int4_fusion_detailed.log \
   --study-report reports/jetson-readiness-20261012/int4_fusion_detailed_report.json \
   --timezone-offset +0800 \

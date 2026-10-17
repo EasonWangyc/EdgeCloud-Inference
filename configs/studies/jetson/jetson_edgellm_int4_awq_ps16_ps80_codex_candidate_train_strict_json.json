@@ -1,0 +1,24 @@
+{
+  "study_id": "jetson_edgellm_int4_awq_ps16_ps80_codex_candidate_train_strict_json_i768_k1024",
+  "workload_path": "../../workloads/parking_risk_v2_strict_json.json",
+  "manifest_path": "../../../data/manifests/ps80_development_v1.jsonl",
+  "annotations_path": "../../../data/annotations/ps80_reviewed_v1.jsonl",
+  "data_root": "../../../data",
+  "output_path": "../../../reports/jetson_edgellm_int4_awq_ps16_ps80_codex_candidate_train_strict_json_i768_k1024.json",
+  "split": "train",
+  "repetitions": 1,
+  "power_mode": "15W_MODE_0",
+  "runtime": {
+    "backend": "tensorrt_edge_llm_http",
+    "backend_revision": "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "ps16-domain-calibration-v1",
+    "precision": "int4_awq",
+    "options": {
+      "base_url": "http://127.0.0.1:8000",
+      "model_name": "local",
+      "timeout_seconds": 180
+    }
+  }
+}

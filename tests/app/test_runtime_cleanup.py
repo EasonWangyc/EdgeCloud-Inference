@@ -56,7 +56,7 @@ class SingleImageCleanupTests(unittest.TestCase):
 
 class StudyCleanupTests(unittest.TestCase):
     def config(self, output):
-        return replace(AppStudyConfig.load(ROOT / "configs/studies/wsl_vllm_workload_resize_ps20.json"),
+        return replace(AppStudyConfig.load(ROOT / "configs/studies/wsl/wsl_vllm_workload_resize_ps20.json"),
                        output_path=output)
 
     def test_cleanup_failure_keeps_completed_report_on_disk(self):

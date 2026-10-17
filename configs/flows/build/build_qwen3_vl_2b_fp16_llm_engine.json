@@ -1,0 +1,50 @@
+{
+  "flow_id": "build_qwen3_vl_2b_fp16_llm_7f061f21",
+  "stage": "build_engine",
+  "working_directory": "../../..",
+  "command": [
+    "python3",
+    "scripts/build_edgellm_vlm_engines.py",
+    "--edge-llm-root",
+    "../TensorRT-Edge-LLM",
+    "--expected-revision",
+    "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
+    "--onnx-root",
+    "artifacts/onnx/qwen3_vl_2b_fp16",
+    "--engine-root",
+    "artifacts/engines/qwen3_vl_2b_fp16",
+    "--component",
+    "llm",
+    "--max-batch-size",
+    "1",
+    "--max-input-len",
+    "1024",
+    "--max-kv-cache-capacity",
+    "2048",
+    "--workspace-limit-mib",
+    "1024",
+    "--builder-optimization-level",
+    "0",
+    "--enable-weight-streaming"
+  ],
+  "required_inputs": [
+    "../../../scripts/build_edgellm_vlm_engines.py",
+    "../../../../TensorRT-Edge-LLM/build/examples/llm/llm_build",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/tokenizer.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/tokenizer_config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/processed_chat_template.json"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/llm.engine",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/config.json",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/embedding.safetensors",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/tokenizer.json",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/tokenizer_config.json",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16/llm/processed_chat_template.json"
+  ],
+  "record_path": "../../../reports/flows/build_qwen3_vl_2b_fp16_llm_engine.json",
+  "log_path": "../../../reports/flows/build_qwen3_vl_2b_fp16_llm_engine.log"
+}

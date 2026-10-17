@@ -29,6 +29,28 @@ vllm:num_requests_running{engine="0"} 0
         self.assertFalse(result["valid"])
         self.assertEqual(result["reason"], "counter_reset_or_server_restart")
 
+    def test_disappearing_counter_series_invalidates_window(self) -> None:
+        before = 'vllm:generation_tokens_total{engine="0"} 10\nvllm:request_success_total{engine="0"} 1'
+        after = 'vllm:request_success_total{engine="0"} 2'
+        result = summarize_window(before, after, 1)
+        self.assertFalse(result["valid"])
+        self.assertIn('vllm:generation_tokens_total{engine="0"}', result["reset_samples"])
+
+    def test_process_restart_invalidates_window_even_if_counters_increase(self) -> None:
+        before = ('process_start_time_seconds 100\n'
+                  'vllm:request_success_total 10\n'
+                  'vllm:generation_tokens_total 100\n')
+        after = ('process_start_time_seconds 200\n'
+                 'vllm:request_success_total 11\n'
+                 'vllm:generation_tokens_total 120\n')
+        result = summarize_window(before, after, 1)
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["reason"], "server_process_changed_or_identity_missing")
+
+        result = summarize_window(before, after.replace('process_start_time_seconds 200\n', ''), 1)
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["reason"], "server_process_changed_or_identity_missing")
+
     def test_missing_metrics_do_not_become_zero_latency(self) -> None:
         result = summarize_window('', 'vllm:generation_tokens_total 20', 1)
         self.assertIsNone(result["timings"]["inter_token_latency_seconds"]["mean_ms"])

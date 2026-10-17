@@ -1,0 +1,45 @@
+{
+  "flow_id": "build_qwen3_vl_2b_fp16_visual_max1536_candidate_7f061f21",
+  "stage": "build_engine",
+  "working_directory": "../../..",
+  "command": [
+    "python3",
+    "scripts/build_edgellm_vlm_engines.py",
+    "--edge-llm-root",
+    "../TensorRT-Edge-LLM",
+    "--expected-revision",
+    "7f061f21f0a581ba234a1e233c9315b89d8e47d6",
+    "--onnx-root",
+    "artifacts/onnx/qwen3_vl_2b_fp16",
+    "--engine-root",
+    "artifacts/engines/qwen3_vl_2b_fp16_visual_max1536_candidate",
+    "--component",
+    "visual",
+    "--workspace-limit-mib",
+    "1024",
+    "--builder-optimization-level",
+    "1",
+    "--min-image-tokens",
+    "8",
+    "--max-image-tokens",
+    "1536",
+    "--max-image-tokens-per-image",
+    "1536",
+    "--build-report",
+    "reports/flows/build_qwen3_vl_2b_fp16_visual_max1536_candidate.build.json"
+  ],
+  "required_inputs": [
+    "../../../scripts/build_edgellm_vlm_engines.py",
+    "../../../../TensorRT-Edge-LLM/build/examples/multimodal/visual_build",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/preprocessor_config.json"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/engines/qwen3_vl_2b_fp16_visual_max1536_candidate/visual/visual.engine",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16_visual_max1536_candidate/visual/config.json",
+    "../../../artifacts/engines/qwen3_vl_2b_fp16_visual_max1536_candidate/visual/preprocessor_config.json"
+  ],
+  "record_path": "../../../reports/flows/build_qwen3_vl_2b_fp16_visual_max1536_candidate.json",
+  "log_path": "../../../reports/flows/build_qwen3_vl_2b_fp16_visual_max1536_candidate.log"
+}

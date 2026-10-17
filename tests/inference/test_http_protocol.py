@@ -129,6 +129,29 @@ class HttpProtocolTests(unittest.TestCase):
         self.assertIsNone(record.stage_timings.client_tpot_ms)
         self.assertEqual(record.stream_timings.chunk_intervals_ms, ())
 
+    def test_stream_without_text_does_not_claim_client_ttft_from_server_timing(self) -> None:
+        streamed = Response([
+            event({"choices": [{"delta": {"role": "assistant"}}],
+                   "timings_ms": {"ttft_ms": 12}}),
+            event({"choices": [], "usage": {"completion_tokens": 0}}),
+            b"data: [DONE]\n\n",
+        ])
+        with patch("parksight_vlm.inference.edge_llm.urlopen", return_value=streamed):
+            generation = EdgeLlmHttpBackend().generate(image_path=IMAGE, workload=WORKLOAD)
+        self.assertEqual(generation.raw_output, "")
+        self.assertIsNone(generation.stage_timings.time_to_first_token_ms)
+        self.assertIsNone(generation.stage_timings.client_total_ttft_ms)
+
+        non_streamed = Response([json.dumps({
+            "choices": [{"message": {"content": "{}"}}],
+            "timings_ms": {"ttft_ms": 12},
+        }).encode()], stream=False)
+        with patch("parksight_vlm.inference.edge_llm.urlopen", return_value=non_streamed):
+            generation = EdgeLlmHttpBackend(stream_responses=False).generate(
+                image_path=IMAGE, workload=WORKLOAD,
+            )
+        self.assertEqual(generation.stage_timings.time_to_first_token_ms, 12)
+
     def test_stream_arrivals_reject_non_monotonic_or_invalid_values(self) -> None:
         for arrivals in ((2.0, 1.0), (None,), (True,), (float("nan"),)):
             with self.subTest(arrivals=arrivals), self.assertRaises(ValueError):

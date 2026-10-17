@@ -32,8 +32,8 @@
       "entrypoints": [
         "scripts/build_edgellm_vlm_engines.py",
         "configs/tensorrt/jetson_orin_nano_int4_gemv_runtime_v1.json",
-        "scripts/inspect_tensorrt_engine.py",
-        "scripts/summarize_tensorrt_nsight_trace.py"
+        "scripts/diagnostics/inspect_tensorrt_engine.py",
+        "scripts/diagnostics/summarize_tensorrt_nsight_trace.py"
       ],
       "acceptance": "分别对 lm_head tactic/shape、INT4 GEMV/GEMM 候选做 3 次低层 A/B，再做完整 VLM 和 soak"
     },
@@ -63,7 +63,7 @@
       "id": "P3",
       "name": "paged_kv_cache",
       "status": "v091_source_audited_backport_boundary_pending",
-      "entrypoint": "scripts/audit_edgellm_kv_cache.py",
+      "entrypoint": "scripts/diagnostics/audit_edgellm_kv_cache.py",
       "implementation": [
         "builder/config: usePagedKVCache, tokensPerPage, maxKVPoolPages",
         "attention plugin: page pool/page table bindings and paged FMHA/XQA route",

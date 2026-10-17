@@ -37,11 +37,30 @@ def summarize_window(before: str, after: str, elapsed_seconds: float) -> dict[st
     if not math.isfinite(elapsed_seconds) or elapsed_seconds <= 0:
         raise ValueError("elapsed_seconds must be finite and positive")
     previous, current = parse_samples(before), parse_samples(after)
+    process_start_before = {
+        key: value for key, value in previous.items()
+        if key.split("{", 1)[0] == "process_start_time_seconds"
+    }
+    process_start_after = {
+        key: value for key, value in current.items()
+        if key.split("{", 1)[0] == "process_start_time_seconds"
+    }
+    if (process_start_before or process_start_after) and process_start_before != process_start_after:
+        return {
+            "valid": False,
+            "reason": "server_process_changed_or_identity_missing",
+            "process_start_time_seconds_before": process_start_before,
+            "process_start_time_seconds_after": process_start_after,
+        }
     selected = {}
     reset = []
-    for key, value in current.items():
+    def is_cumulative(key: str) -> bool:
         name = key.split("{", 1)[0]
-        if not name.startswith("vllm:") or not name.endswith(("_sum", "_count", "_bucket", "_total")):
+        return name.startswith("vllm:") and name.endswith(("_sum", "_count", "_bucket", "_total"))
+
+    reset.extend(key for key in previous if is_cumulative(key) and key not in current)
+    for key, value in current.items():
+        if not is_cumulative(key):
             continue
         delta = value - previous.get(key, 0.0)
         if delta < 0:

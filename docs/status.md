@@ -1,5 +1,42 @@
 # 当前实现状态
 
+## 2026-10-16 paged KV 构建预检
+
+- batch=4 paged ONNX 的独立准备流程已产出 28 个启用 page table 的
+  AttentionPlugin 节点；构建配置已改为消费该 staged ONNX，并核对页数与文件哈希。
+  准备脚本和构建预检均新增 page-table/KV pool 结构校验，已有 Jetson stage 尚待
+  用新版 `--check-only` 复核。预检现还拒绝静态 page-table batch 维小于构建 batch；
+  paged 脚本同时支持按文件路径直接执行和作为 `scripts` 包导入。
+- Jetson `--check-only` 返回 `ready_for_build`，记录源码内容指纹及 builder/plugin
+  二进制哈希；batch=4 构建配置已固定三者并在启动前核对，未创建 engine 目录。
+  实际 engine 重建及推理复验仍待完成，
+  不据此声明 paged KV 性能收益或切换默认 engine。
+- 服务入口新增 `--require-paged-kv`：在导入 GPU runtime 前核验 engine 的 paged
+  布局、128-token 页及 batch 最坏情况下的 pool 容量；`--check-only` 可先执行，
+  启用 runtime metadata 输出时也会记录配置哈希。尚待在重建后的 Jetson engine 上复核。
+
+## 2026-10-15 Jetson paged KV soak 与 decode 路由核验
+
+- 固定 paged KV engine、PS20 和 15W 模式完成 HTTP c=4、20 图 × 5 次 soak：
+  100/100 请求完成并通过严格 JSON 校验，墙钟输出吞吐 `40.154 tok/s`，
+  E2E p50/p90/p99 为 `7.808/7.969/8.386 s`。20/20 图五次重复的原文哈希与
+  token 数稳定，并与上一轮 paged c=4 结果一致。
+- 原始归档和 422 点整机 telemetry 保存在本地忽略目录
+  `reports/jetson-readiness-20261012/p3_paged_http_layout_select_soak100_artifacts.tgz`；
+  RAM 峰值 `5660/7619 MB`、swap 峰值 `1604 MB`、温度峰值 `56.593 °C`。
+  详情见 [P3 实施记录](tensorrt-dynamic-batching-paged-kv.md#p3paged-kv-cache)。
+- 同输入 dense/paged Nsight GPU trace 各有 1848 次 `kernel_mha`：寄存器指纹分别为
+  `152/202 Reg/Trd`，与源码中 paged XQA 选择路径一致；两份 engine 的 FP16 GEMM
+  tactic 也不同，不能将长输入原文差异单独归因于 KV 布局。原始 trace 归档于本地
+  `reports/jetson-readiness-20261012/p3_paged_nsight_route_artifacts.tgz`。
+- 128/256/512-token page 边界附近的 12 个合成输入完成 dense→paged→dense：
+  两 token 输出 12/12 一致；24-token 输出 9/12 一致，差异仅在 511–513-token
+  输入且首分歧候选分数接近。dense 返回组 12/12 原文和 logprobs 一致；不同
+  FP16 GEMM tactic 仍是混杂因素。原始归档与逐样本分析保存在同一本地目录。
+- benchmark 汇总器现可校验诊断 JSONL 的 `raw_output`、`output_sha256` 和
+  `assessment_valid`，并报告完整覆盖时的严格 JSON 有效率；不复制原文到汇总。
+  长输入 dense/paged 严格 parity 与 page-list 实参仍待验证，默认 engine 不变。
+
 ## 2026-09-22 TensorRT P2 native microbatch revalidation and P3 paged-KV source boundary
 
 - 固定 Edge-LLM v0.9.1 checkout 的 max batch=4 engine 已确认可构建；上次失败属于请求级
@@ -71,7 +108,7 @@
 
 ## 2026-09-06 TensorRT patch-chain reproducibility checker
 
-- 新增 `scripts/check_tensorrt_patch_chain.py`，要求固定 Edge-LLM revision，并在临时
+- 新增 `scripts/diagnostics/check_tensorrt_patch_chain.py`，要求固定 Edge-LLM revision，并在临时
   detached worktree 中按给定顺序执行 `git apply --check` 与 apply；正式 checkout 不会被修改。
 - 输出报告记录补丁顺序、文件名和 SHA-256，适用于 greedy/reduced-vocab、XQA/FMHA、INT4
   GEMV/GEMM 等需要多补丁叠加的候选。该工具只验证源码级可应用性，不代替 plugin 编译、
@@ -90,7 +127,7 @@
   `maxKVCacheCapacity`，没有 `maxKVPoolPages`；`cpp/plugins/attentionPlugin/attentionPlugin.cpp`
   在两个 attention 构造路径都将 `usePagedKVCache` 设为 `false`。因此该 revision 的 paged
   KV 是源码/ABI 能力残留，但没有接入当前 builder-to-plugin 运行链路。
-- 新增 `scripts/audit_edgellm_kv_cache.py`，在 Jetson checkout 上扫描 builder pool option、
+- 新增 `scripts/diagnostics/audit_edgellm_kv_cache.py`，在 Jetson checkout 上扫描 builder pool option、
   paged runtime/pool/XQA symbols，并检查 attention plugin 是否将
   `usePagedKVCache` 硬编码为 `false`；报告可输出
   `paged_kv_path_exposed_requires_runtime_validation`、`paged_kv_not_wired_in_checkout`、
@@ -152,7 +189,7 @@
   但这不能抵消编译期资源约束。0045 现在只保留为负向资源校验样例，不进入 build queue；
   若要研究 512 tile，必须重新设计 tile/stages 并作为新的 compound candidate 单独验证。
 - 补丁 SHA-256：`3d442c309060b231ffa699fdcea33926b73f68a7a66c75cd8968684b4577fe2e`。
-- 新增 `scripts/audit_int4_gemm_candidates.py`，在板端 build 前复现固定 v0.9.1 的
+- 新增 `scripts/diagnostics/audit_int4_gemm_candidates.py`，在板端 build 前复现固定 v0.9.1 的
   `kSmemByteSize` 公式、warp/thread 上限和 N 对齐检查；CTA-N=512 被自动标记为不可进入
   build queue，CTA-N=256、CTA-M=128、CTA-K=128 仍需真实编译和板端 A/B。
 
@@ -185,7 +222,7 @@
 
 ## 2026-09-06 TensorRT visual-profile A/B guard
 
-- `scripts/compare_tensorrt_benchmarks.py` 现在在存在视觉 benchmark 元数据时额外校验
+- `scripts/diagnostics/compare_tensorrt_benchmarks.py` 现在在存在视觉 benchmark 元数据时额外校验
   `min_image_tokens`、`max_image_tokens` 和 `max_image_tokens_per_image`；旧的 LLM-only
   summary 仍兼容，但一侧缺失视觉 profile 或两侧 profile 不一致时不会判定为可比。
 - 该校验用于隔离 visual builder level 2/3 与现有 visual level1 的实验变量，不代表任何
@@ -318,7 +355,7 @@
 
 ## 2026-09-06 TensorRT Nsight kernel aggregation
 
-- 新增 `scripts/summarize_tensorrt_nsight_trace.py`，将 Nsight Systems 的
+- 新增 `scripts/diagnostics/summarize_tensorrt_nsight_trace.py`，将 Nsight Systems 的
   `cuda_gpu_trace.csv` 按 W4A16、FMHA/XQA、sampling、embedding、memcpy 和其他 kernel
   分类，输出每类的调用次数、总时延、分位数和 top-kernel 列表，并保存输入 trace SHA-256。
 - 该摘要明确排除 memcpy 后再计算 `kernel_duration_ms`，用于后续 `STAGES=2/3/4` A/B 的
@@ -329,7 +366,7 @@
   `565.230 ms`（约 `-17.46%`），但 W4A16 由 `262.312 ms` 变为 `262.390 ms`
   （约 `+0.03%`），FMHA 由 `75.264 ms` 降至 `70.680 ms`。这支持“level1 主要改变
   TensorRT tactic/其他生成路径”的解释，不支持把收益归因给 W4A16 kernel。
-- 新增 `scripts/compare_tensorrt_nsight_summaries.py`，并生成
+- 新增 `scripts/diagnostics/compare_tensorrt_nsight_summaries.py`，并生成
   `reports/jetson-tensorrt-revalidation/int4_opt0_vs_opt1_nsight_comparison.json`；该报告
   统一记录每个 trace/category/top-kernel 的 `candidate - baseline` 差值，后续候选可沿用
   同一格式进行单变量归因。当前差异报告仍只代表 GPU trace，不替代 TTFT、decode、E2E、
@@ -498,8 +535,8 @@
 
 ## 2026-09-06 TensorRT reduced-vocabulary historical-output coverage
 
-- `scripts/build_reduced_vocab_map.py` 和
-  `scripts/evaluate_reduced_vocab_coverage.py` 现在支持读取 StudyReport 中成功请求的
+- `scripts/experiments/build_reduced_vocab_map.py` 和
+  `scripts/diagnostics/evaluate_reduced_vocab_coverage.py` 现在支持读取 StudyReport 中成功请求的
   `raw_output`；失败记录不会被当作已覆盖，并单独保存报告路径和样本来源。
 - 对现有 level0/level1 各 20 条历史输出进行检查，原 `65536` map 的覆盖率为
   `3076/3079=99.90%`，有 3 个样本缺少 token `45879/63365`，因此没有直接进入构建。
@@ -516,7 +553,7 @@
 
 ## 2026-09-06 TensorRT packed-INT4 vocabulary alignment gate
 
-- `scripts/validate_reduced_vocab.py` 新增 `--packed-int4-lm-head`，可在离线 map 校验阶段
+- `scripts/diagnostics/validate_reduced_vocab.py` 新增 `--packed-int4-lm-head`，可在离线 map 校验阶段
   直接检查 reduced vocabulary 是否满足 packed INT4 `lm_head` 的 group size `128` 对齐。
 - engine build wrapper 会在声明 `expected_lm_head_precision=int4_awq` 时复用该约束；
   非对齐 map 会在 `llm_build` 启动前失败，`32768/65536` 候选均通过结构对齐检查。
@@ -561,7 +598,7 @@
 
 ## 2026-09-06 TensorRT reduced-vocabulary holdout coverage
 
-- 新增 `scripts/evaluate_reduced_vocab_coverage.py`，在 map 构建完成后独立检查冻结
+- 新增 `scripts/diagnostics/evaluate_reduced_vocab_coverage.py`，在 map 构建完成后独立检查冻结
   holdout 的参考输出 token 是否均可被 map 表达；该检查不修改 map，也不参与候选选择。
 - 联合字符覆盖与历史成功输出策略的 `65536` 和 `32768` map 在冻结
   `ps20_pilot_v1` 的 20 个样本上均覆盖 `632/632` 个 token、`20/20` 个样本无缺失；
@@ -580,7 +617,7 @@
 - 选择报告显示，当前 `ps80_reviewed_v1` 标注语料只覆盖 `194` 个 token；对 65536 map
   的观测覆盖比例为 `0.296%`，其余主要由低 id filler 补齐。两份 map 因此仅是生成器
   smoke artifact，不进入 engine 构建或性能结论。
-- 新增 `scripts/build_reduced_vocab_map.py`、`scripts/validate_reduced_vocab.py`，并将
+- 新增 `scripts/experiments/build_reduced_vocab_map.py`、`scripts/diagnostics/validate_reduced_vocab.py`，并将
   reduced-vocab map/metadata/选择语料文件的 SHA-256 纳入 engine provenance 与校验流程。下一步应在
   Edge-LLM v0.9.1 工具环境中使用更大、更贴近输出分布的语料生成 map，再进行独立 engine
   A/B；不能把结构 `valid` 当作质量通过。
@@ -590,7 +627,7 @@
 - 现有 `int4_awq` 量化产物的 `lm_head` 明确保持 FP16；Engine Inspector 中最终
   `[1,1,2048] x [1,2048,151936]` GEMM 是 level0/level1 之间发生 tactic 变化的关键输出层。
 - 新增 `--lm-head-quantization int4_awq` 可选参数及独立 flow
-  `configs/flows/quantize_qwen3_vl_2b_int4_awq_lm_head_candidate.json`。正式量化命令默认
+  `configs/flows/quantize/quantize_qwen3_vl_2b_int4_awq_lm_head_candidate.json`。正式量化命令默认
   不传该参数，因此不改变已有 checkpoint 或 engine。
 - 该候选需要单独完成 quantize -> export -> build -> Engine Inspector/Nsight -> 3×20
   质量与性能 -> 100 次 soak；不能与 reduced-vocab 同时首测。官方 v0.9.1 文档将
@@ -630,7 +667,7 @@
 
 ## 2026-09-06 TensorRT candidate gate configuration fix
 
-- `scripts/evaluate_tensorrt_candidate.py` 现在实际读取并应用 tuning config 中的
+- `scripts/diagnostics/evaluate_tensorrt_candidate.py` 现在实际读取并应用 tuning config 中的
   `require_backend_completion`、`require_json_validity` 和
   `require_quality_non_regression`，同时在 comparison 中保留 completion、JSON 和质量
   差异，避免配置声明与实际晋级逻辑不一致。
@@ -649,7 +686,7 @@
   identity、重复次数、严格 JSON、质量和 soak 均通过；gate 唯一剩余阻断原因为两份历史
   StudyReport 的 `peak_memory_mb` 均未保存。该结果记录于
   `reports/jetson-tensorrt-revalidation/int4_opt1_gate_recheck.json`，未用其他来源补填内存。
-- 新增 `scripts/compare_tensorrt_study_reports.py`，直接比较两份 StudyReport 的 workload/runtime
+- 新增 `scripts/diagnostics/compare_tensorrt_study_reports.py`，直接比较两份 StudyReport 的 workload/runtime
   identity、prefill/TTFT/decode/E2E、tokens/s、RAM、功耗、温度和质量指标；缺失字段标为
   `unverified`，且明确声明不能仅凭报告归因到具体算子或 kernel。
 - 已用真实 level0/level1 StudyReport 生成
@@ -763,7 +800,7 @@
   `cold_start_ms`，避免把 warm-up 后的稳态样本误标为冷启动。
 - benchmark 汇总现在要求完整固定 metadata 才将 A/B 标记为 `matched`；字段缺失统一为
   `unverified`，防止不同 profile、功耗模式或 precision 的结果被误合并。
-- 新增 `scripts/compare_tensorrt_engine_inspectors.py`，对齐算子类型、tactic、workspace
+- 新增 `scripts/diagnostics/compare_tensorrt_engine_inspectors.py`，对齐算子类型、tactic、workspace
   与 device memory；现采用唯一 layer name 优先、index 兜底，并显式
   记录 fusion/split 导致的新增和移除 layer，并汇总类型、tactic、workspace、timing
   变化及算子数量 delta。字段不可见时标记为 `missing`，不将元数据差异直接解释为
@@ -837,7 +874,7 @@
 ## 2026-09-05 TensorRT attention/kernel 证据链
 
 - 基于 2026-09-04 的 level 0/1 VLM profile 日志新增
-  `scripts/summarize_edgellm_runtime_log.py`，自动区分 FMHA cubin 加载尝试、driver
+  `scripts/diagnostics/summarize_edgellm_runtime_log.py`，自动区分 FMHA cubin 加载尝试、driver
   拒绝项、未被拒绝项、engine 的 attention 配置、aux/worker stream 和 CUDA Graph capture。
 - 对现有日志复核结果为：两级均为 `headDim=128`、`numKVHeads=8`，FMHA 加载候选集合一致，
   均有 2 个 `head_size=256 + custom_mask` 候选被 driver 拒绝，decoder CUDA Graph 均捕获成功。
@@ -846,11 +883,11 @@
 - 新增的 profile transition 解析显示，level0/level1 日志各有 43 次 profile 切换，
   `same_profile_transition_count=0`，实际序列为 prefill/decode 的必要交替；因此没有引入
   “跳过重复 profile 切换”的无收益 patch。
-- 新增 `scripts/inspect_tensorrt_engine.py` 和
+- 新增 `scripts/diagnostics/inspect_tensorrt_engine.py` 和
   `0010-configurable-profiling-verbosity.patch`，支持构建 profiling engine 后导出
   TensorRT Engine Inspector 的 layer/tactic/workspace 元数据。该 profiling engine 与正式
   性能 engine 分离，不改变当前默认 level=0。
-- 新增 `scripts/check_tensorrt_profile_contract.py`，把 prompt token 预算与 KV capacity
+- 新增 `scripts/diagnostics/check_tensorrt_profile_contract.py`，把 prompt token 预算与 KV capacity
   关系变成构建前门禁。现有 v1 workload 实测输入为 735 token；在 `maxGenerateLength=32`
   下，`i768/k768` 需要 767 capacity 并通过，`i512/k768` 因输入越界被拒绝。下一轮优先
   在板端复验 `i768/k768` 的内存与 decode 变化。
@@ -933,7 +970,7 @@
   validation 版本；报告 SHA-256 分别为
   `d3bea513b671dfd5d84f034be1d5d1ec9b0f4bd259bcd7279b843cb067c853bf` 和
   `d1c81a98dfba0ed0f9b9ef3234988627aab6a8cd76ebc7052fc16c9b51afae87`。
-- 新增 `scripts/apply_review_decisions.py`，支持按批次应用人工 `confirmed`/`corrected`
+- 新增 `scripts/data/apply_review_decisions.py`，支持按批次应用人工 `confirmed`/`corrected`
   决策，保留未复核记录，并在 `--require-complete` 下强制 80 条全部定稿；77 个无硬件
   测试通过。工具还支持生成全部 case 的待编辑决策模板；该模板不改变候选 annotation，
   也不绕过最终 provenance gate。
@@ -941,7 +978,7 @@
   校验数据来源、schema、split、图片、workload 和模型路径。候选配置实测通过；当前
   `ps64_reviewed_v1` 正式配置因数据仍为 Codex 候选来源而在模型加载前拒绝。无硬件测试
   已累计 `77/77` 通过。
-- 新增 `scripts/build_review_html.py`，将 80 条错误复核记录和本地图片打包为单文件离线
+- 新增 `scripts/data/build_review_html.py`，将 80 条错误复核记录和本地图片打包为单文件离线
   复核页面；页面支持逐条填写 `confirmed`/`corrected` 决策，并下载可直接交给
   `apply_review_decisions.py` 的 JSONL。当前生成页面已嵌入 80 张图片，仍需人工实际
   复核后才能形成 `human_confirmed_v1`；页面另将未完成草稿保存到当前浏览器本地，不写入
@@ -996,7 +1033,7 @@
 
 - 已生成 80 条候选开发评测的人工复核清单：覆盖 `80/80` 个 case，77 条 JSON 有效，47 条
   风险等级匹配，30 个 case 存在事件差异，33 个 case 为高优先级；事件差异全部是候选
-  事件漏检。生成入口为 `scripts/build_candidate_error_review.py`，输出为
+  事件漏检。生成入口为 `scripts/data/build_candidate_error_review.py`，输出为
   `reports/label-review-20260830/ps80_candidate_error_review_v1.json`。
 - 已在本地 RTX 4060 隔离训练环境完成候选 LoRA：3 epochs、48 个唯一训练样本、63 条
   过采样记录、48 个 optimizer steps，validation loss `0.72318`，峰值显存 `5.272 GiB`，

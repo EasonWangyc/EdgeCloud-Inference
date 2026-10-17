@@ -75,7 +75,7 @@ class ImagePreprocessingTests(unittest.TestCase):
                 self.assertFalse(paths[0].parent.exists())
 
     def test_edge_application_passes_policy_and_preserves_source_default(self) -> None:
-        config = AppStudyConfig.load(ROOT / "configs/studies/jetson_edgellm_fp16_workload_resize_ps20_pilot.json")
+        config = AppStudyConfig.load(ROOT / "configs/studies/jetson/jetson_edgellm_fp16_workload_resize_ps20_pilot.json")
         runtime = build_runtime(config.runtime, data_root=config.data_root)
         self.assertEqual(runtime._backend._image_preprocessing, "workload_resize")
         invalid = replace(config.runtime, options={**config.runtime.options, "image_preprocessing": "invalid"})
@@ -138,7 +138,7 @@ class ImagePreprocessingTests(unittest.TestCase):
             VllmHttpBackend(base_url="http://127.0.0.1:8000", model_name="test", image_preprocessing="invalid")
 
     def test_application_passes_policy_and_rejects_invalid_policy(self) -> None:
-        config = AppStudyConfig.load(ROOT / "configs/studies/wsl_vllm_workload_resize_ps20.json")
+        config = AppStudyConfig.load(ROOT / "configs/studies/wsl/wsl_vllm_workload_resize_ps20.json")
         runtime = build_runtime(config.runtime, data_root=config.data_root)
         self.assertEqual(runtime._backend._image_preprocessing, "workload_resize")
         invalid = replace(config.runtime, options={**config.runtime.options, "image_preprocessing": "invalid"})

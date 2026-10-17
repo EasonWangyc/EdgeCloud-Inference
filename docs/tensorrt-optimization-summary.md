@@ -34,7 +34,7 @@ engine，得到 27.627 output tokens/s；融合候选相对它提升 1.79%–1.9
 | P0 | C++ direct runtime benchmark | [`run_edgellm_direct_benchmark.py`](../scripts/run_edgellm_direct_benchmark.py) 已实现命令、CSV、日志和 JSONL 归档；已在板端复验 | 同一 engine/workload 下分别采集 prefill/decode；不把 HTTP RTT 或 prefill 伪装成 TTFT |
 | P1 | `lm_head` / INT4 GEMV/GEMM | 已完成 Engine Inspector、Nsight 热点复核；候选 A/B 仍保留为隔离实验 | 候选必须完成 3 次低层 A/B、完整 VLM 和 soak；当前热点仍优先是大词表 FP16 `lm_head` GEMM 和 INT4 GEMV |
 | P2 | dynamic batching / continuous batching | 已修复 active-batch eviction、vanilla sampling indices 和空 batch compact；新增单 worker bounded native microbatch scheduler，统一流式/非流式 route；batch=1/4 低层 smoke 均 exit code 0 | c=2、c=4 各 60/60 成功，c=4 100 请求 soak 100/100 成功；同一服务的 c=1/4/1 各 60/60 成功且逐请求输出哈希一致，c=4 墙钟吞吐为两侧 c=1 均值的 1.474 倍；需验证更多请求形状和默认部署配置 |
-| P3 | paged KV | 已完成最小 builder/plugin/runtime backport；HTTP eviction KV compact 按 engine 布局分流，dense 路径保持原步长 | 最终分流版 HTTP c=1/4/1 各 3×20 完成，180/180 严格 JSON 有效且原文一致；长输入数值 parity、Nsight route 和 100 请求 soak 未完成，暂不替换默认 engine |
+| P3 | paged KV | 已完成最小 builder/plugin/runtime backport；HTTP eviction KV compact 按 engine 布局分流，dense 路径保持原步长 | 最终分流版 HTTP c=1/4/1 各 3×20 完成，180/180 严格 JSON 有效且原文一致；c=4 soak 100/100 完成且严格 JSON 有效；Nsight 已区分 paged decode kernel；长输入 parity 和 page-list 实参核验未完成，暂不替换默认 engine |
 
 P0 runner 的输出 JSONL 可以直接交给 `scripts/benchmark_edgellm.py` 汇总；它同时写出
 `.metadata.json`，保存每次命令、CSV 路径、完整日志路径、退出码和 warning。`llm_bench`
@@ -48,7 +48,7 @@ P2 sweep 只负责复用现有 HTTP benchmark，不把独立连接的吞吐自�
 | P0 | level0/level1，各自 prefill/decode、3 次重复，`i768/k1024`、batch=1、CUDA Graph | level1 相对 level0：prefill `526.8768 -> 426.7482 ms`，降低 `19.0042%`；decode `126.7803 -> 27.4670 ms/token`，加速 `4.6157x` | direct C++ runtime benchmark 已完成；结果已归档 |
 | P1 | level1 non-Graph Nsight + Engine Inspector | `gemv_kernel` 占 kernel time `52.12%`，FP16 `lm_head` GEMM 占 `34.43%`，`kernel_mha` 占 `6.88%`；level1 fresh Inspector 未输出可解析 tactic 字段 | 热点已复核；没有新的稳定 GEMV/GEMM 候选晋级 |
 | P2 | 修复 max batch=4 engine 的 active-batch eviction，并增加 HTTP native microbatch scheduler；重编译 runtime/plugin 后复验 batch=1/4 与并发 | 低层 batch=1 `29.4693 ms`；batch=4 `43.7650 ms`，按 4 条序列折算 aggregate 约 `91.4 tok/s`；HTTP c=2 `60/60`、c=4 `60/60`、soak `100/100`；新增单服务 PS20 c=1/4/1 各 3×20 对照及逐请求原文哈希 | 请求级 dynamic batching 已完成功能与同口径吞吐复验；`27.5115/41.0209/40.2069 tok/s` 是历史 HTTP aggregate 指标，新对照为 `27.259/40.169/27.261 tok/s`；尚需更多输入长度及默认部署门禁 |
-| P3 | 修复 ONNX shape、AttentionPlugin/page-table/KV 写入接线及按布局分流的 HTTP eviction KV 地址步长；构建独立 `i768/k1024/level1/maxBatch4/maxKVPoolPages32` engine | 低层 batch=1/4 均可执行，旧 3×20 decode 均值 `857.7339/1342.0580 ms`；短 ragged batch=4 为 4/4 原文一致，长 ragged 有 2/4 差异；最终分流版 dense c=1/4/1 原文 20/20 一致，paged 同机各 3×20 原文 60/60 一致且格式 180/180 有效 | 冻结 PS20 HTTP 并发门禁通过；长输入 dense/paged 严格 parity、Nsight route 和 100 请求 soak 未完成，不能宣称 paged 加速或替换默认 engine |
+| P3 | 修复 ONNX shape、AttentionPlugin/page-table/KV 写入接线及按布局分流的 HTTP eviction KV 地址步长；构建独立 `i768/k1024/level1/maxBatch4/maxKVPoolPages32` engine | 低层 batch=1/4 均可执行，旧 3×20 decode 均值 `857.7339/1342.0580 ms`；短 ragged batch=4 为 4/4 原文一致，长 ragged 有 2/4 差异；最终分流版 paged 同机各 3×20 原文 60/60 一致且格式 180/180 有效；c=4 soak 100/100 严格 JSON 有效、`40.154 tok/s`；Nsight 的 1848 次 decode kernel 指纹为 dense `152` / paged `202 Reg/Trd`；24-token 页边界诊断中 9/12 输出一致 | 冻结 PS20 HTTP 并发、100 请求稳定性和 decode 专用 kernel 路由已有证据；长输入严格 parity 与 page-list 实参未核验，不能宣称 paged 加速或替换默认 engine |
 
 P2 的 batch=4 engine 构建峰值为 GPU allocator `1617 MiB`、CPU allocator `5496 MiB`，engine
 SHA-256 为 `2502e35bf979dba95a2158a90b79d09551ea2a3638d423ef4207fdc5b154833a`。低层
@@ -225,7 +225,9 @@ level 1 non-Graph decode trace 的 GPU kernel 时间分布为：
 - 当前项目增加的是构建配置、provenance、benchmark、Nsight 汇总和隔离候选 patch；没有将自研
   CUDA kernel 或新 TensorRT plugin 宣称为正式生产路径。
 - 投机采样、NVFP4、FP8 和 FP16 weight streaming 尚未形成本轮可比较的性能结果；paged KV 已形成
-  独立低层候选，但尚未通过 parity、HTTP、Nsight 和 soak 门禁，因此不进入默认性能结论。
+  独立候选并通过冻结 PS20 HTTP 和 100 请求 soak；decode kernel 路由已有 Nsight 指纹证据，
+  仍缺长输入 parity 与 page-list 实参核验，
+  因此不进入默认性能结论。
 - builder level `2/3` 在板端构建阶段因约 622 MB CUDA allocation 失败，尚未生成可比较 engine；
   不对其推理性能作推断。
 

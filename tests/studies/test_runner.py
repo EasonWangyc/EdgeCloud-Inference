@@ -134,9 +134,8 @@ class StudyRunnerTests(unittest.TestCase):
             report.records[0].stage_timings.end_to_end_ms,
         )
         self.assertEqual(report.performance_metrics.tokens_per_second, 500.0)
-        self.assertAlmostEqual(
-            report.performance_metrics.aggregate_output_tokens_per_end_to_end_second,
-            10.0 / (report.records[0].stage_timings.end_to_end_ms / 1000.0),
+        self.assertIsNone(
+            report.performance_metrics.aggregate_output_tokens_per_end_to_end_second
         )
         self.assertEqual(report.performance_metrics.peak_memory_mb, 2048.0)
         self.assertEqual(report.environment_snapshot, {"platform": "unit-test"})

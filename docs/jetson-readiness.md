@@ -67,7 +67,7 @@ completion usage；安装只发生在服务进程内。当前签名及客户端�
 
 阶段接口核验确认：现有 binding 只导出 profiling 开关和累计 token/run metrics，
 没有导出 `gTimer` 的 CUDA event 时间。新增
-`scripts/prepare_edgellm_timing_binding.py` 可针对已核验源码生成增量补丁，增加
+`scripts/experiments/prepare_edgellm_timing_binding.py` 可针对已核验源码生成增量补丁，增加
 `get_stage_timing_snapshot()`，按原始 stage ID 返回累计 GPU 毫秒和测量次数。
 生成前必须给出匹配的源码 SHA-256；工具不修改 checkout、不编译且不覆盖已有输出。
 
@@ -81,7 +81,7 @@ Timer 是全局可变状态，快照仅限全部 native worker 停止执行时�
 
 ## 独立 binding 构建与导入验收
 
-`scripts/build_edgellm_timing_binding.py` 默认生成只读构建计划，显式 `--execute`
+`scripts/experiments/build_edgellm_timing_binding.py` 默认生成只读构建计划，显式 `--execute`
 才在新输出目录复制 binding 源码、校验和应用补丁、编译单个对象并链接模块。
 复用已有静态库和 device-link 对象，不调用整个 CMake build；记录编译/链接参数与
 输入哈希，输出路径已重定向，原源码及链接输入在结束时复核。目录存在时拒绝覆盖。
@@ -99,7 +99,7 @@ Timer 是全局可变状态，快照仅限全部 native worker 停止执行时�
 构建与导入证据见本地 `native_timing_build_result.json` 和板端 `build_record.json`、
 `build.log`、`probe.json`。实际验收发现 upstream `_import_runtime()` 会按文件路径
 重新加载模块；仅调整 `PYTHONPATH` 不足以选择候选绑定，提前导入还会触发重复类型
-注册。`scripts/run_edgellm_native_probe.py` 在构造 runtime 时临时指定已验证模块，
+注册。`scripts/experiments/run_edgellm_native_probe.py` 在构造 runtime 时临时指定已验证模块，
 结束后恢复 loader。该选择机制已复用至正式 HTTP 入口，并要求明确的候选目录和
 SHA-256；默认仍使用 upstream loader。
 
@@ -197,7 +197,7 @@ prefill/generation；001 的 HTTP TTFT 为 10681.44 ms，包含前一请求排�
 ## 冻结 PS20 完整验收
 
 2026-10-09 使用新 study 配置
-`configs/studies/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，标准 StudyRunner
+`configs/studies/jetson/jetson_edgellm_int4_serial_stages_ps20_pilot.json`，标准 StudyRunner
 完成 20/20 后端执行和严格 JSON 校验，失败汇总为空。三个阶段各 20 条，native
 计数、SSE usage、报告字段和连续快照窗口逐条核对通过；输入/输出/decode 总数为
 11400/1550/1530。HTTP TTFT p50 567.71 ms、E2E p50/p90/p99
@@ -368,7 +368,7 @@ cat /proc/swaps
 
 ## 显式贪心参数的 PS20 验收（2026-10-12）
 
-新配置 `configs/studies/jetson_edgellm_int4_explicit_greedy_ps20_pilot.json`
+新配置 `configs/studies/jetson/jetson_edgellm_int4_explicit_greedy_ps20_pilot.json`
 在隔离目录 `artifacts/runtime/ps20-explicit-greedy-20261012/` 完成 20/20 执行
 与严格 JSON 校验，三个阶段各 20 条，失败为空。阶段窗口连续，native 计数、
 SSE usage 和报告一致；输入/输出/decode 总数仍为 11400/1550/1530。全服务日志
@@ -401,7 +401,7 @@ assessment、输出 token 数和 workload identity 均与开启前测一致。
 | profiling 关闭 | 567.23 | 10.488 | 7.3389 |
 | profiling 开启复验 | 565.96 | 10.486 | 7.3361 |
 
-关闭档使用 `configs/studies/jetson_edgellm_int4_profiling_off_ps20_pilot.json`。
+关闭档使用 `configs/studies/jetson/jetson_edgellm_int4_profiling_off_ps20_pilot.json`。
 隔离 launcher 显式关闭 profiling，逐请求检查实际状态与 timer 快照；20 条
 均为关闭且计时器未增长。SSE 输出计数、事件持久化与状态审计仍存在，因此这是
 关闭 CUDA 阶段计时的参考，不能称为完全无插桩基线。input/decode 计数和阶段

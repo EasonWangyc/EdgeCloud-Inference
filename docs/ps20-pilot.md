@@ -29,7 +29,7 @@ AVM 图片 -> ParkingCaseCatalog -> Jetson Transformers FP16 -> InferenceRecord 
 - manifest：`data/manifests/ps20_pilot_v1.jsonl`
 - annotation：`data/annotations/ps20_pilot_v1.jsonl`
 - 本地图片：`data/raw/ps2.0/pilot/`
-- Jetson study：`configs/studies/jetson_transformers_fp16_ps20_pilot.json`
+- Jetson study：`configs/studies/jetson/jetson_transformers_fp16_ps20_pilot.json`
 
 ## 标注边界
 
@@ -82,7 +82,7 @@ TRANSFORMERS_OFFLINE=1 \
 PYTHONPATH=src \
 timeout 1800s \
 .venv-jetson/bin/python -m parksight_vlm.app.run_study \
-  --config configs/studies/jetson_transformers_fp16_ps20_pilot.json
+  --config configs/studies/jetson/jetson_transformers_fp16_ps20_pilot.json
 ```
 
 外部同时以一秒间隔运行 `tegrastats`。完整运行包含模型冷启动和 20 次推理，监控日志

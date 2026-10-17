@@ -1,0 +1,33 @@
+{
+  "flow_id": "quantize_qwen3_vl_2b_int4_awq_89644892_n128",
+  "stage": "quantize_model",
+  "working_directory": "../../..",
+  "command": [
+    "tensorrt-edgellm-quantize",
+    "llm",
+    "--model_dir",
+    "models/Qwen3-VL-2B-Instruct-89644892",
+    "--output_dir",
+    "artifacts/quantized/qwen3_vl_2b_int4_awq_n128",
+    "--quantization",
+    "int4_awq",
+    "--text_dataset",
+    "cnn_dailymail",
+    "--num_samples",
+    "128"
+  ],
+  "required_inputs": [
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/config.json",
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/model.safetensors",
+    "../../../../TensorRT-Edge-LLM/tensorrt_edgellm/quantization/quantize.py"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_n128/config.json",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_n128/model.safetensors",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_n128/hf_quant_config.json",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_n128/tokenizer.json",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_n128/tokenizer_config.json"
+  ],
+  "record_path": "../../../reports/flows/quantize_qwen3_vl_2b_int4_awq_n128.json",
+  "log_path": "../../../reports/flows/quantize_qwen3_vl_2b_int4_awq_n128.log"
+}

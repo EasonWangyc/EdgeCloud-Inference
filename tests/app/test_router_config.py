@@ -15,7 +15,7 @@ ROUTER_CONFIG_PATH = (
     PROJECT_ROOT
     / "configs"
     / "studies"
-    / "jetson_edge_vllm_router_ps20_pilot.example.json"
+    / "jetson" / "jetson_edge_vllm_router_ps20_pilot.example.json"
 )
 
 

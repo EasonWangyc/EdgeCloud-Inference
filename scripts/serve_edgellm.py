@@ -67,6 +67,39 @@ def resolve_http_max_batch_size(
     return effective, engine_max
 
 
+def require_paged_kv_engine(llm_engine_root: Path) -> dict[str, Any]:
+    """Reject a mislabeled paged candidate before importing the GPU runtime."""
+    config_path = llm_engine_root / "config.json"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read paged LLM engine config: {config_path}") from error
+    builder = payload.get("builder_config") if isinstance(payload, dict) else None
+    if not isinstance(builder, dict) or builder.get("kv_cache_layout") != "paged":
+        raise ValueError(f"LLM engine does not declare paged KV: {config_path}")
+    numeric_fields = (
+        "tokens_per_page", "max_kv_pool_pages", "max_batch_size", "max_kv_cache_capacity",
+    )
+    values = {name: builder.get(name) for name in numeric_fields}
+    if any(type(value) is not int or value <= 0 for value in values.values()):
+        raise ValueError(f"paged LLM engine has invalid page or capacity fields: {config_path}")
+    if values["tokens_per_page"] != 128:
+        raise ValueError(f"paged LLM engine uses unsupported tokens_per_page: {config_path}")
+    required_pages = values["max_batch_size"] * (
+        (values["max_kv_cache_capacity"] + values["tokens_per_page"] - 1)
+        // values["tokens_per_page"]
+    )
+    if values["max_kv_pool_pages"] < required_pages:
+        raise ValueError(f"paged LLM engine pool is below batch worst-case capacity: {config_path}")
+    return {
+        "config_path": str(config_path.resolve()),
+        "config_sha256": sha256_file(config_path),
+        "kv_cache_layout": "paged",
+        **values,
+        "required_pool_pages": required_pages,
+    }
+
+
 def serve_prebuilt_engines(
     *,
     engine_root: Path | None = None,
@@ -238,6 +271,7 @@ def build_runtime_metadata(
     serial_stage_metrics: bool = False,
     http_max_batch_size: int | None = None,
     engine_max_batch_size: int | None = None,
+    paged_kv_engine: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造一次服务启动的 engine 与 runtime 开关身份。"""
     metadata = {
@@ -308,6 +342,8 @@ def build_runtime_metadata(
     }
     if patch_chain_verification is not None:
         metadata["patch_chain_verification"] = dict(patch_chain_verification)
+    if paged_kv_engine is not None:
+        metadata["paged_kv_engine"] = dict(paged_kv_engine)
     if stream_usage:
         from parksight_vlm.inference import edge_server_metrics
 
@@ -398,9 +434,9 @@ def verify_runtime_patch_chain(
             "--verify-runtime-patch-chain requires at least one --runtime-patch"
         )
     try:
-        from scripts.check_tensorrt_patch_chain import check_patch_chain
+        from scripts.diagnostics.check_tensorrt_patch_chain import check_patch_chain
     except ModuleNotFoundError:
-        from check_tensorrt_patch_chain import check_patch_chain
+        from diagnostics.check_tensorrt_patch_chain import check_patch_chain
     return check_patch_chain(
         edge_llm_root=edge_llm_root,
         patches=runtime_patches,
@@ -667,6 +703,10 @@ def main(argv: list[str] | None = None) -> int:
         help="HTTP 微批调度上限；默认从 LLM engine config 读取，显式值必须匹配 engine maxBatch",
     )
     parser.add_argument(
+        "--require-paged-kv", action="store_true",
+        help="启动前核验 LLM engine 的 paged 布局、128-token 页和物理 pool 容量",
+    )
+    parser.add_argument(
         "--weight-streaming-budget-bytes",
         type=int,
         default=None,
@@ -858,6 +898,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 report["http_max_batch_size"] = effective_batch
                 report["engine_max_batch_size"] = engine_batch
+                if args.require_paged_kv:
+                    report["paged_kv_engine"] = require_paged_kv_engine(
+                        Path(report["llm_engine_root"])
+                    )
                 if args.serial_stage_metrics and effective_batch != 1:
                     raise ValueError("serial stage metrics require batch size 1")
             except ValueError as error:
@@ -896,6 +940,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
     if args.serial_stage_metrics and args.http_max_batch_size != 1:
         parser.error("serial stage metrics require batch size 1")
+    try:
+        paged_kv_engine = (
+            require_paged_kv_engine(llm_engine_root) if args.require_paged_kv else None
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     configure_edge_llm_environment(args.edge_llm_root, args.plugin_path)
     configure_weight_streaming_budget(args.weight_streaming_budget_bytes)
@@ -941,6 +991,7 @@ def main(argv: list[str] | None = None) -> int:
                 serial_stage_metrics=args.serial_stage_metrics,
                 http_max_batch_size=args.http_max_batch_size,
                 engine_max_batch_size=engine_max_batch_size,
+                paged_kv_engine=paged_kv_engine,
             ),
         )
     serve_prebuilt_engines(

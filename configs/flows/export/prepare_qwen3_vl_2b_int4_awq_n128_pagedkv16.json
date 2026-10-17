@@ -1,0 +1,42 @@
+{
+  "flow_id": "prepare_qwen3_vl_2b_int4_awq_n128_pagedkv16",
+  "stage": "export_model",
+  "working_directory": "../../..",
+  "command": [
+    "python3",
+    "scripts/experiments/prepare_edgellm_paged_onnx.py",
+    "--source-root",
+    "artifacts/onnx/qwen3_vl_2b_int4_awq_n128",
+    "--destination-root",
+    "artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16",
+    "--max-batch-size",
+    "1",
+    "--max-kv-cache-capacity",
+    "1024",
+    "--max-kv-pool-pages",
+    "16"
+  ],
+  "required_inputs": [
+    "../../../scripts/experiments/prepare_edgellm_paged_onnx.py",
+    "../../../scripts/experiments/patch_edgellm_paged_onnx.py",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/model.onnx.data",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/tokenizer.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/tokenizer_config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/processed_chat_template.json"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/model.onnx.data",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/tokenizer.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/tokenizer_config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/llm/processed_chat_template.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_n128_pagedkv16/paged_onnx_provenance.json"
+  ],
+  "record_path": "../../../reports/flows/prepare_qwen3_vl_2b_int4_awq_n128_pagedkv16.json",
+  "log_path": "../../../reports/flows/prepare_qwen3_vl_2b_int4_awq_n128_pagedkv16.log"
+}

@@ -142,7 +142,7 @@ Transformers 与 Jetson Edge-LLM 的同机结果用于回答部署优化带来�
 需由设备/网络 provider 接入后才可用于资源门槛判断。
 
 实现和示例配置见 `src/parksight_vlm/inference/routing.py` 与
-`configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json`。
+`configs/studies/jetson/jetson_edge_vllm_router_ps20_pilot.example.json`。
 
 ## 测试 seam
 

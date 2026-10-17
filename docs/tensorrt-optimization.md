@@ -45,7 +45,7 @@ plugin 编译，并通过候选 plugin 注入后的 engine 加载、CUDA Graph c
 然后记录 engine 文件大小和 SHA-256：
 
 ```bash
-PYTHONPATH=src python3 scripts/record_engine_provenance.py \
+PYTHONPATH=src python3 scripts/diagnostics/record_engine_provenance.py \
   --engine artifacts/engines/qwen3_vl_2b_int4_awq_i768_k1024/llm/llm.engine \
   --metadata-json reports/tensorrt/opt1.metadata.json \
   --output reports/tensorrt/opt1.engine.provenance.json
@@ -92,7 +92,7 @@ sidecar 的设备字段和每个 BuilderConfig 字段会在 `llm_build` 启动�
 构建报告会保存 sidecar 的大小、SHA-256 和绑定内容。示例：
 
 ```bash
-python3 scripts/prepare_isolated_edgellm_builder.py \
+python3 scripts/experiments/prepare_isolated_edgellm_builder.py \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --patch patches/tensorrt-edge-llm/0012-configurable-timing-cache.patch \
   --output artifacts/runtime/isolated-builder-timing \
@@ -122,13 +122,13 @@ candidate 仍需保留独立 engine、provenance、build report 和 inference be
 构建后可在 benchmark 前验证 provenance：
 
 ```bash
-PYTHONPATH=src python3 scripts/record_engine_provenance.py \
+PYTHONPATH=src python3 scripts/diagnostics/record_engine_provenance.py \
   --engine artifacts/engines/qwen3_vl_2b_int4_awq_i768_k1024_vocab65536/llm/llm.engine \
   --metadata-json reports/tensorrt/opt1.engine.metadata.json \
   --reduced-vocab-dir artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage \
   --output reports/tensorrt/opt1_vocab65536.engine.provenance.json
 
-PYTHONPATH=src python3 scripts/validate_tensorrt_provenance.py \
+PYTHONPATH=src python3 scripts/diagnostics/validate_tensorrt_provenance.py \
   --provenance reports/tensorrt/opt1.engine.provenance.json \
   --tuning-config configs/tensorrt/jetson_orin_nano_int4_v1.json \
   --reduced-vocab-dir artifacts/reduced_vocab/qwen3_vl_v1_65536 \
@@ -143,7 +143,7 @@ PYTHONPATH=src python3 scripts/validate_tensorrt_provenance.py \
 `TensorRTTuningConfig`：
 
 ```bash
-PYTHONPATH=src python3 scripts/validate_tensorrt_provenance.py \
+PYTHONPATH=src python3 scripts/diagnostics/validate_tensorrt_provenance.py \
   --provenance reports/tensorrt/visual_opt2.engine.provenance.json \
   --build-report reports/tensorrt/visual_opt2.build.json \
   --engine artifacts/engines/qwen3_vl_2b_fp16_visual_opt2/visual/visual.engine \
@@ -269,7 +269,7 @@ runtime A/B 的身份快照，不替代 benchmark 指标或 Engine Inspector 证
 两份 benchmark 汇总可进一步计算每个阶段的 p50/p90/p99 改善率：
 
 ```bash
-PYTHONPATH=src python3 scripts/compare_tensorrt_benchmarks.py \
+PYTHONPATH=src python3 scripts/diagnostics/compare_tensorrt_benchmarks.py \
   --baseline reports/tensorrt/level1.benchmark.json \
   --candidate reports/tensorrt/level2.benchmark.json \
   --output reports/tensorrt/level1_vs_level2.benchmark-comparison.json
@@ -296,7 +296,7 @@ Edge-LLM 的 `--dumpProfile`，将 layer、tactic、workspace 和 CUDA event 数
 若已构建 profiling engine，可直接导出 inspector JSON：
 
 ```bash
-PYTHONPATH=src python3 scripts/inspect_tensorrt_engine.py \
+PYTHONPATH=src python3 scripts/diagnostics/inspect_tensorrt_engine.py \
   --engine artifacts/engines/<candidate>/llm/llm.engine \
   --plugin-path /home/ubuntu/TensorRT-Edge-LLM/build/libNvInfer_edgellm_plugin.so \
   --output reports/tensorrt/<candidate>.engine-inspector.json
@@ -305,7 +305,7 @@ PYTHONPATH=src python3 scripts/inspect_tensorrt_engine.py \
 两个候选的 inspector JSON 可进一步做层级对齐：
 
 ```bash
-PYTHONPATH=src python3 scripts/compare_tensorrt_engine_inspectors.py \
+PYTHONPATH=src python3 scripts/diagnostics/compare_tensorrt_engine_inspectors.py \
   --left reports/tensorrt/level1.engine-inspector.json \
   --right reports/tensorrt/level2.engine-inspector.json \
   --output reports/tensorrt/level1_vs_level2.engine-inspector-comparison.json
@@ -325,7 +325,7 @@ layer/tactic/workspace/timing 差异；若 profiling verbosity 或执行 profile
 runtime 日志可用以下命令汇总：
 
 ```bash
-PYTHONPATH=src python3 scripts/summarize_edgellm_runtime_log.py \
+PYTHONPATH=src python3 scripts/diagnostics/summarize_edgellm_runtime_log.py \
   --log reports/jetson-tensorrt-stage1/opt0_vlm32_run.log \
   --log reports/jetson-tensorrt-stage1/opt1_vlm32_run.log \
   --output reports/jetson-tensorrt-stage1/fmha_graph_comparison.json
@@ -438,13 +438,13 @@ block size 是否有效。
 `--int4-gemv-n-per-block 4` 应作为另一组独立 A/B，不要与 block-size 变化合并成一个
 结论；否则无法判断收益来自 output-channel 分块还是 threads/block。
 
-在把候选服务启动到 Jetson 前，可用 `scripts/check_tensorrt_patch_chain.py` 对固定
+在把候选服务启动到 Jetson 前，可用 `scripts/diagnostics/check_tensorrt_patch_chain.py` 对固定
 Edge-LLM checkout 做链式校验。工具在临时 detached worktree 中逐个执行
 `git apply --check` 和 apply，源 checkout 本身不会被修改；输出还会记录 revision、补丁顺序
 和每个补丁的 SHA-256：
 
 ```bash
-PYTHONPATH=src python3 scripts/check_tensorrt_patch_chain.py \
+PYTHONPATH=src python3 scripts/diagnostics/check_tensorrt_patch_chain.py \
   --edge-llm-root /home/ubuntu/TensorRT-Edge-LLM \
   --expected-revision 7f061f21f0a581ba234a1e233c9315b89d8e47d6 \
   --patch patches/tensorrt-edge-llm/0024-greedy-argmax-fast-path.patch \
@@ -656,14 +656,14 @@ workload 做 A/B，并单独记录 HTTP RTT、TTFT 与服务端阶段时间；�
 `"reuse_http_connection": true`。
 
 仓库已提供两个独立的 profiling 构建流程：
-`configs/flows/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt2_profile.json` 和
-`configs/flows/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt3_profile.json`。它们固定
+`configs/flows/build/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt2_profile.json` 和
+`configs/flows/build/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt3_profile.json`。它们固定
 `i768/k1024`、workspace `1024 MiB`，仅将 builder level 分别设为 2/3，并打开
 `profiling-verbosity=detailed`；构建报告单独保存，不覆盖正式 engine。
 
 workspace 第二阶段也已提供独立流程：
-`configs/flows/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt1_workspace512.json` 和
-`configs/flows/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt1_workspace1536.json`。两者固定
+`configs/flows/build/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt1_workspace512.json` 和
+`configs/flows/build/build_qwen3_vl_2b_int4_awq_llm_i768_k1024_opt1_workspace1536.json`。两者固定
 level1、`i768/k1024`，仅改变 workspace 上限；视觉 engine 继续复用已核验版本。
 
 host-side runtime 开关使用独立矩阵
@@ -688,7 +688,7 @@ profile 缩小必须先通过 prompt contract 门禁，再在板端构建和测�
 会在输入长度检查阶段失败，不能拿它作为性能结果。
 
 ```bash
-PYTHONPATH=src python3 scripts/check_tensorrt_profile_contract.py \
+PYTHONPATH=src python3 scripts/diagnostics/check_tensorrt_profile_contract.py \
   --prompt-contract reports/prompt-contract/qwen3_vl_v1_i768_budget_20260830.json \
   --max-input-len 768 \
   --max-kv-cache-capacity 768 \
@@ -730,7 +730,7 @@ PYTHONPATH=src python3 scripts/build_edgellm_vlm_engines.py \
 必须使用 `repetitions=3`，候选门禁命令为：
 
 ```bash
-PYTHONPATH=src python3 scripts/evaluate_tensorrt_candidate.py \
+PYTHONPATH=src python3 scripts/diagnostics/evaluate_tensorrt_candidate.py \
   --baseline reports/tensorrt/level0.study.json \
   --candidate reports/tensorrt/level1.study.json \
   --soak reports/tensorrt/level1.soak.json \
@@ -755,7 +755,7 @@ PYTHONPATH=src python3 scripts/evaluate_tensorrt_candidate.py \
 运行日志摘要，并显式打开证据门禁：
 
 ```bash
-PYTHONPATH=src python3 scripts/evaluate_tensorrt_candidate.py \
+PYTHONPATH=src python3 scripts/diagnostics/evaluate_tensorrt_candidate.py \
   --baseline reports/tensorrt/level0.study.json \
   --candidate reports/tensorrt/fmha_candidate.study.json \
   --soak reports/tensorrt/fmha_candidate.soak.json \
@@ -895,7 +895,7 @@ dispatcher 会用 `N % kernel::kGemmCtaN` 判断 GEMM/GEMV 路径，因此必须
 W4A16 CTA 候选在提交到板端 build 前，可先运行静态资源审计：
 
 ```bash
-PYTHONPATH=src python3 scripts/audit_int4_gemm_candidates.py \
+PYTHONPATH=src python3 scripts/diagnostics/audit_int4_gemm_candidates.py \
   --output reports/tensorrt/int4_gemm_candidate_audit.json
 ```
 
@@ -1024,7 +1024,7 @@ LLM SHA 和 runtime options 保持不变；否则结果标记为不可比。
 构建完成后可直接用 build report 生成视觉 engine provenance，避免再次手工录入 profile：
 
 ```bash
-PYTHONPATH=src python3 scripts/record_engine_provenance.py \
+PYTHONPATH=src python3 scripts/diagnostics/record_engine_provenance.py \
   --engine artifacts/engines/qwen3_vl_2b_fp16_visual_opt2/visual/visual.engine \
   --build-report reports/flows/build_qwen3_vl_2b_fp16_visual_opt2.build.json \
   --output reports/tensorrt/visual_opt2.engine.provenance.json
@@ -1045,7 +1045,7 @@ build report；因此构建失败或 provenance 指向错误 engine 时会在 be
 并以频次排序后用低 id 补齐到目标大小：
 
 ```bash
-PYTHONPATH=src python3 scripts/build_reduced_vocab_map.py \
+PYTHONPATH=src python3 scripts/experiments/build_reduced_vocab_map.py \
   --tokenizer /path/to/Qwen3-VL-2B-Instruct \
   --input-jsonl data/annotations/ps80_reviewed_v1.jsonl \
   --field assessment \
@@ -1061,7 +1061,7 @@ PYTHONPATH=src python3 scripts/build_reduced_vocab_map.py \
 `selection_report.json` 也必须保留，用于审计输入来源和 tokenizer SHA-256：
 
 ```bash
-PYTHONPATH=src python3 scripts/build_reduced_vocab_map.py \
+PYTHONPATH=src python3 scripts/experiments/build_reduced_vocab_map.py \
   --tokenizer models/Qwen3-VL-2B-Instruct-89644892 \
   --input-jsonl data/processed/calibration/ps16_int4_calibration_v1.jsonl \
   --input-jsonl data/annotations/ps80_human_confirmed_v1.jsonl \
@@ -1099,10 +1099,10 @@ tensorrt-edgellm-reduce-vocab \
 
 ```bash
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_int4_awq_reduced_vocab65536.json
+  --config configs/flows/export/export_qwen3_vl_2b_int4_awq_reduced_vocab65536.json
 
 PYTHONPATH=src python3 scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_int4_awq_reduced_vocab65536_llm_i768_k1024_opt1.json
+  --config configs/flows/build/build_qwen3_vl_2b_int4_awq_reduced_vocab65536_llm_i768_k1024_opt1.json
 ```
 
 以上命令默认只打印 readiness；确认 required inputs 和输出目录均正确后，再分别追加
@@ -1129,10 +1129,10 @@ PYTHONPATH=src python3 scripts/build_engine.py \
 
 ```bash
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_int4_awq_reduced_vocab65536_history.json \
+  --config configs/flows/archive/export_qwen3_vl_2b_int4_awq_reduced_vocab65536_history.json \
   --execute
 PYTHONPATH=src python3 scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_int4_awq_reduced_vocab65536_history_llm_i768_k1024_opt1.json \
+  --config configs/flows/archive/build_qwen3_vl_2b_int4_awq_reduced_vocab65536_history_llm_i768_k1024_opt1.json \
   --execute
 ```
 
@@ -1149,7 +1149,7 @@ SHA-256。它用于生成可构建的实验候选，不代表覆盖了模型所�
 engine 的严格 JSON 和质量评测：
 
 ```bash
-PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
+PYTHONPATH=src python3 scripts/diagnostics/evaluate_reduced_vocab_coverage.py \
   --tokenizer models/Qwen3-VL-2B-Instruct-89644892 \
   --map artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage/vocab_map.safetensors \
   --metadata artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage/reduced_vocab.json \
@@ -1165,7 +1165,7 @@ PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
 历史输出和冻结 holdout 均通过后，才进入板端 reduced-vocab engine A/B。
 
 ```bash
-PYTHONPATH=src python3 scripts/validate_reduced_vocab.py \
+PYTHONPATH=src python3 scripts/diagnostics/validate_reduced_vocab.py \
   --map artifacts/reduced_vocab/qwen3_vl_v1/vocab_map.safetensors \
   --metadata artifacts/reduced_vocab/qwen3_vl_v1/reduced_vocab.json \
   --original-vocab-size 151936 \
@@ -1186,7 +1186,7 @@ PYTHONPATH=src python3 scripts/validate_reduced_vocab.py \
 样本无缺失，已通过 reference-token coverage 门禁：
 
 ```bash
-PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
+PYTHONPATH=src python3 scripts/diagnostics/evaluate_reduced_vocab_coverage.py \
   --tokenizer models/Qwen3-VL-2B-Instruct-89644892 \
   --map artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history/vocab_map.safetensors \
   --metadata artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history/reduced_vocab.json \
@@ -1208,9 +1208,9 @@ PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
 
 ```bash
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history.json
+  --config configs/flows/archive/export_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history.json
 PYTHONPATH=src python3 scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_llm_i768_k1024_opt1.json
+  --config configs/flows/archive/build_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_llm_i768_k1024_opt1.json
 ```
 
 该 flow 同时要求 `calibration_provenance.json`、reduced-vocab 的
@@ -1221,7 +1221,7 @@ packed INT4 `lm_head` 的组合，应保留失败日志并停止在候选阶段�
 `632/632` token、`20/20` 样本无缺失：
 
 ```bash
-PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
+PYTHONPATH=src python3 scripts/diagnostics/evaluate_reduced_vocab_coverage.py \
   --tokenizer models/Qwen3-VL-2B-Instruct-89644892 \
   --map artifacts/reduced_vocab/qwen3_vl_v1_32768_character_coverage_plus_history/vocab_map.safetensors \
   --metadata artifacts/reduced_vocab/qwen3_vl_v1_32768_character_coverage_plus_history/reduced_vocab.json \
@@ -1236,13 +1236,13 @@ PYTHONPATH=src python3 scripts/evaluate_reduced_vocab_coverage.py \
 返回非零表示至少一个参考样本含缺失 token；这不是模型质量失败，但应在构建和性能 A/B
 之前处理或显式记录风险。两个 map 仍需分别完成 ONNX/engine 构建、严格 JSON、质量、
 decode/E2E、内存和 soak A/B。
-仓库提供 `scripts/summarize_tensorrt_nsight_trace.py` 将 Nsight Systems 导出的
+仓库提供 `scripts/diagnostics/summarize_tensorrt_nsight_trace.py` 将 Nsight Systems 导出的
 `cuda_gpu_trace.csv` 按 W4A16、FMHA/XQA、sampling、embedding 和 memcpy 分类，保存每类的
 count、total/p50/p90/max 时延以及 top kernels。该摘要只做 GPU trace 事件聚合，不替代
 匹配 workload 的 TTFT/decode/E2E，也不能单独证明算子融合或 layer 对应关系：
 
 ```bash
-PYTHONPATH=src python3 scripts/summarize_tensorrt_nsight_trace.py \
+PYTHONPATH=src python3 scripts/diagnostics/summarize_tensorrt_nsight_trace.py \
   --trace reports/jetson-tensorrt-revalidation/int4_opt1_nsight_stats_cuda_gpu_trace.csv \
   --label int4_opt1 \
   --output reports/jetson-tensorrt-revalidation/int4_opt1_nsight_kernel_summary.json
@@ -1253,7 +1253,7 @@ PYTHONPATH=src python3 scripts/summarize_tensorrt_nsight_trace.py \
 的 TTFT/decode/E2E 报告并列阅读：
 
 ```bash
-PYTHONPATH=src python3 scripts/compare_tensorrt_nsight_summaries.py \
+PYTHONPATH=src python3 scripts/diagnostics/compare_tensorrt_nsight_summaries.py \
   --baseline reports/jetson-tensorrt-revalidation/int4_opt0_nsight_kernel_summary.json \
   --candidate reports/jetson-tensorrt-revalidation/int4_opt1_nsight_kernel_summary.json \
   --output reports/jetson-tensorrt-revalidation/int4_opt0_vs_opt1_nsight_comparison.json
@@ -1535,7 +1535,7 @@ non-Graph 的下降低于测量与晋级门槛，且没有在 CUDA Graph 路径�
 ## WSL 迁移后 Graph 开关的隔离验证
 
 当前 Jetson `experimental/server/engine.py` 的 Graph 捕获入口已移动，提供
-`scripts/prepare_edgellm_cuda_graph.py` 按实际源码 SHA-256 生成补丁，拒绝来源
+`scripts/experiments/prepare_edgellm_cuda_graph.py` 按实际源码 SHA-256 生成补丁，拒绝来源
 变化、重复开关和不支持的布局，并保留未修改内容及换行。默认仍捕获 Graph。
 实验应复制 experimental Python 包到新目录、只修改副本，并将该目录置于
 PYTHONPATH 首位；实际导入路径和哈希必须与副本一致。不要直接改原 checkout。
@@ -1543,7 +1543,7 @@ PYTHONPATH 首位；实际导入路径和哈希必须与副本一致。不要直
 准备命令示例（Jetson Bash，输出使用新路径）：
 
 ```bash
-python3 scripts/prepare_edgellm_cuda_graph.py \
+python3 scripts/experiments/prepare_edgellm_cuda_graph.py \
   --source /home/ubuntu/TensorRT-Edge-LLM/experimental/server/engine.py \
   --source-sha256 5a7d77fbc97e1a18c8dd44b7c922bfbf300e708e2cb957f0471ee50585d1fc43 \
   --output /tmp/edgellm-graph-switch.patch
@@ -1557,7 +1557,7 @@ Graph replay，后续以 Nsight CUDA trace 核验。
 
 ## 输出投影的只读 ONNX 检查
 
-`scripts/inspect_onnx_output_projection.py` 从指定 graph output 反向追踪 Cast 等
+`scripts/diagnostics/inspect_onnx_output_projection.py` 从指定 graph output 反向追踪 Cast 等
 输出节点，要求最终 MatMul 的第二个输入为二维 initializer。它校验 protobuf
 SHA-256，直接解析已校验的字节，不读取 external_data 权重文件；输出路径必须
 尚不存在。缺失、循环、歧义或不支持的路径均报错，不按 initializer 名猜测。
@@ -1566,7 +1566,7 @@ ONNX 为独立检查依赖，核心运行和无硬件测试无需安装。
 在另行准备、安装 `onnx==1.19.0` 的检查环境中执行：
 
 ```bash
-python scripts/inspect_onnx_output_projection.py \
+python scripts/diagnostics/inspect_onnx_output_projection.py \
   --model reports/jetson-readiness-20261012/int4_n128_graph.onnx \
   --model-sha256 78c7badb4cfa1f81dd71a66742b811c89131e232c7af6522fd73956ea59e9603 \
   --output reports/jetson-readiness-20261012/onnx_output_projection-new.json
@@ -1608,7 +1608,7 @@ ONNX 1.19.0 为独立准备依赖；核心测试和 Jetson materializer 不依�
 在已安装该检查依赖的环境中生成新计划：
 
 ```bash
-python scripts/prepare_edgellm_int4_fusion.py \
+python scripts/experiments/prepare_edgellm_int4_fusion.py \
   --model reports/jetson-readiness-20261012/int4_n128_graph.onnx \
   --scale-evidence reports/jetson-readiness-20261012/prequant_scale_evidence.json \
   --output-directory reports/jetson-readiness-20261012/fusion-plan-review
@@ -1618,7 +1618,7 @@ python scripts/prepare_edgellm_int4_fusion.py \
 SSH 登录后的 Bash 运行 materializer；输出必须使用新目录：
 
 ```bash
-python3 scripts/materialize_edgellm_int4_fusion.py \
+python3 scripts/experiments/materialize_edgellm_int4_fusion.py \
   --prepared-directory artifacts/runtime/int4-fusion-prepare-20261012/prepared \
   --source-data artifacts/onnx/qwen3_vl_2b_int4_awq_n128/llm/model.onnx.data \
   --output-directory artifacts/runtime/fusion-review/candidate

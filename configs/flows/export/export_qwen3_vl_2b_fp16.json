@@ -1,0 +1,27 @@
+{
+  "flow_id": "export_qwen3_vl_2b_fp16_89644892",
+  "stage": "export_model",
+  "working_directory": "../../..",
+  "command": [
+    "tensorrt-edgellm-export",
+    "models/Qwen3-VL-2B-Instruct-89644892",
+    "artifacts/onnx/qwen3_vl_2b_fp16"
+  ],
+  "required_inputs": [
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/config.json",
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/model.safetensors"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/tokenizer.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/tokenizer_config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/llm/processed_chat_template.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_fp16/visual/preprocessor_config.json"
+  ],
+  "record_path": "../../../reports/flows/export_qwen3_vl_2b_fp16.json",
+  "log_path": "../../../reports/flows/export_qwen3_vl_2b_fp16.log"
+}

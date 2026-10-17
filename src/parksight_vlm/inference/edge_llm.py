@@ -139,7 +139,8 @@ class OpenAICompatibleHttpBackend:
                     f"OpenAI-compatible inference HTTP request failed with status {status}"
                 )
             response_will_close = bool(getattr(response, "will_close", False))
-            if self._stream_responses and self.is_event_stream_response(response):
+            streamed_response = self._stream_responses and self.is_event_stream_response(response)
+            if streamed_response:
                 response_payload, measured_ttft_ms, stream_timings, arrivals = (
                     self.read_stream_response(response, request_start=http_start)
                 )
@@ -202,8 +203,7 @@ class OpenAICompatibleHttpBackend:
                 # 流式路径测量客户端从发起请求到收到首个非空 token 的时间；
                 # 非流式路径只有服务端显式返回 TTFT 时才填充该字段。
                 time_to_first_token_ms=(
-                    measured_ttft_ms
-                    if measured_ttft_ms is not None
+                    measured_ttft_ms if streamed_response
                     else server_timings.get("time_to_first_token_ms")
                 ),
                 client_total_ttft_ms=(request_build_ms + measured_ttft_ms if measured_ttft_ms is not None else None),

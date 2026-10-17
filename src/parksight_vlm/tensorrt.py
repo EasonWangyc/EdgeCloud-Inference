@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .assessment import ParkingAssessment
+
 
 class TensorRTValidationError(ValueError):
     """TensorRT 实验配置或运行证据不满足约束。"""
@@ -527,7 +529,7 @@ class TensorRTRuntimeTuningConfig:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkSample:
-    """Edge-LLM 低层 benchmark 输出的一条样本记录。"""
+    """Edge-LLM benchmark 输出的一条样本记录。"""
 
     sample_id: str
     repetition: int
@@ -536,13 +538,16 @@ class BenchmarkSample:
     timings_ms: Mapping[str, float]
     failure: Mapping[str, Any] | None = None
     decode_tokens: int | None = None
+    assessment_valid: bool | None = None
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any], line_number: int) -> "BenchmarkSample":
         required_fields = {"sample_id", "repetition", "status", "output_tokens", "timings_ms"}
         actual_fields = set(payload)
         missing_fields = required_fields - actual_fields
-        unexpected_fields = actual_fields - required_fields - {"failure", "decode_tokens"}
+        unexpected_fields = actual_fields - required_fields - {
+            "failure", "decode_tokens", "assessment_valid", "output_sha256", "raw_output"
+        }
         if missing_fields or unexpected_fields:
             raise TensorRTValidationError(
                 f"invalid benchmark line {line_number} fields; "
@@ -579,7 +584,49 @@ class BenchmarkSample:
             raise TensorRTValidationError(
                 f"benchmark line {line_number}.failure must be an object or null"
             )
-        return cls(sample_id, repetition, status, output_tokens, timings, failure, decode_tokens)
+        assessment_valid = payload.get("assessment_valid")
+        if assessment_valid is not None and not isinstance(assessment_valid, bool):
+            raise TensorRTValidationError(
+                f"benchmark line {line_number}.assessment_valid must be a boolean or null"
+            )
+        raw_output = payload.get("raw_output")
+        if raw_output is not None and not isinstance(raw_output, str):
+            raise TensorRTValidationError(
+                f"benchmark line {line_number}.raw_output must be a string or null"
+            )
+        output_sha256 = payload.get("output_sha256")
+        if output_sha256 is not None:
+            if (
+                not isinstance(output_sha256, str)
+                or len(output_sha256) != 64
+                or any(character not in "0123456789abcdef" for character in output_sha256)
+            ):
+                raise TensorRTValidationError(
+                    f"benchmark line {line_number}.output_sha256 must be a lowercase SHA-256 digest"
+                )
+            if (
+                raw_output is not None
+                and hashlib.sha256(raw_output.encode("utf-8")).hexdigest() != output_sha256
+            ):
+                raise TensorRTValidationError(
+                    f"benchmark line {line_number}.output_sha256 does not match raw_output"
+                )
+        if raw_output is not None and assessment_valid is not None:
+            try:
+                ParkingAssessment.from_mapping(json.loads(raw_output))
+                independently_valid = True
+            except (TypeError, ValueError):
+                independently_valid = False
+            if assessment_valid != independently_valid:
+                raise TensorRTValidationError(
+                    f"benchmark line {line_number}.assessment_valid disagrees with raw_output"
+                )
+        # Diagnostic raw text and its digest are validated but never copied into
+        # the aggregate report. The source JSONL remains the detailed evidence.
+        return cls(
+            sample_id, repetition, status, output_tokens, timings, failure,
+            decode_tokens, assessment_valid,
+        )
 
 
 def load_benchmark_samples(path: Path | str) -> tuple[BenchmarkSample, ...]:
@@ -653,6 +700,7 @@ def summarize_benchmark_samples(
             # warm-up/启动证据时显式保留 null。
             "cold_start_ms": first_warmup_end_to_end_ms,
             "output_tokens": _numeric_summary(output_values),
+            "assessment_validity": _assessment_validity_summary(completed),
             "stage_latency_ms": {
                 stage: _numeric_summary(values) for stage, values in sorted(stage_values.items())
             },
@@ -708,6 +756,7 @@ def _summarize_repetitions(
             "sample_count": len(group),
             "completed_sample_count": len(completed),
             "failed_sample_count": len(group) - len(completed),
+            "assessment_validity": _assessment_validity_summary(completed),
             "stage_latency_ms": {
                 stage: _numeric_summary(values)
                 for stage, values in sorted(stage_values.items())
@@ -715,6 +764,19 @@ def _summarize_repetitions(
             **_sample_token_rates(completed),
         }
     return summaries
+
+
+def _assessment_validity_summary(samples: Sequence[BenchmarkSample]) -> dict[str, Any]:
+    """Report strict JSON coverage without treating missing checks as failures."""
+    observed = [sample.assessment_valid for sample in samples if sample.assessment_valid is not None]
+    valid_count = sum(value is True for value in observed)
+    fully_covered = bool(samples) and len(observed) == len(samples)
+    return {
+        "sample_count": len(observed),
+        "valid_count": valid_count,
+        "invalid_count": len(observed) - valid_count,
+        "valid_rate": valid_count / len(samples) if fully_covered else None,
+    }
 
 
 def sha256_file(path: Path | str) -> str:

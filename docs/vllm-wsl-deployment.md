@@ -69,7 +69,7 @@ workload 发送 `temperature=0` 和 `max_tokens=256`。
 
 ```bash
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_workload_resize_ps20.json \
+  --config configs/studies/wsl/wsl_vllm_workload_resize_ps20.json \
   --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```

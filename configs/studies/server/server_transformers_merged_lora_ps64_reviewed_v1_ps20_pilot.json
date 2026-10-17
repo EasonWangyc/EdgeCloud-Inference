@@ -1,0 +1,24 @@
+{
+  "study_id": "server_transformers_merged_lora_ps64_reviewed_v1_ps20_pilot_89644892",
+  "workload_path": "../../workloads/parking_risk_v1.json",
+  "manifest_path": "../../../data/manifests/ps20_pilot_v1.jsonl",
+  "annotations_path": "../../../data/annotations/ps20_pilot_v1.jsonl",
+  "data_root": "../../../data",
+  "output_path": "../../../reports/server_transformers_merged_lora_ps64_reviewed_v1_ps20_pilot_89644892.json",
+  "split": "test",
+  "repetitions": 1,
+  "power_mode": "rtx4090d-default",
+  "runtime": {
+    "backend": "transformers",
+    "backend_revision": "5.9.0",
+    "model_id": "artifacts/merged/qwen3_vl_2b_parking_lora_ps64_reviewed_v1",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "ps64-reviewed-v1-r16-merged",
+    "precision": "bf16-merged",
+    "options": {
+      "device_map": "auto",
+      "dtype": "bfloat16",
+      "attn_implementation": "sdpa"
+    }
+  }
+}

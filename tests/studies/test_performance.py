@@ -54,6 +54,8 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assertEqual(metrics.token_counts["input_tokens"], 20)
         missing = replace(completed, output_tokens=None)
         self.assertIsNone(compute_performance_metrics([missing], measurement_wall_seconds=1).wall_output_tokens_per_second)
+        partial = compute_performance_metrics([completed, missing], measurement_wall_seconds=2)
+        self.assertIsNone(partial.aggregate_output_tokens_per_end_to_end_second)
 
     def test_empty_study_has_no_first_request_or_cold_start_evidence(self) -> None:
         metrics = compute_performance_metrics([])
@@ -104,6 +106,7 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assertEqual(metrics.successful_requests_per_second, 1 / 3)
         self.assertEqual(metrics.completed_requests_per_second, 2 / 3)
         self.assertEqual(metrics.wall_output_tokens_per_second, 5)
+        self.assertEqual(metrics.aggregate_output_tokens_per_end_to_end_second, 125)
         self.assertEqual(metrics.stage_latency_ms["end_to_end_ms"].count, 2)
         self.assertEqual(metrics.all_request_stage_latency_ms["end_to_end_ms"].count, 4)
         self.assertAlmostEqual(metrics.all_request_stage_latency_ms["end_to_end_ms"].p90, 1430)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from parksight_vlm.inference.prompt_contract import build_prompt_contract_report
 from parksight_vlm.workload import FrozenWorkload
-from scripts.inspect_prompt_contract import main as inspect_prompt_contract_main
+from scripts.diagnostics.inspect_prompt_contract import main as inspect_prompt_contract_main
 
 
 ROOT = Path(__file__).resolve().parents[2]

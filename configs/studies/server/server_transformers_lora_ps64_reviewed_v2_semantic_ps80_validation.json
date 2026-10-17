@@ -1,0 +1,25 @@
+{
+  "study_id": "server_transformers_lora_ps64_reviewed_v2_semantic_ps80_validation_89644892",
+  "workload_path": "../../workloads/parking_risk_v2_strict_json.json",
+  "manifest_path": "../../../data/manifests/ps80_development_v1.jsonl",
+  "annotations_path": "../../../data/annotations/ps80_human_confirmed_v1.jsonl",
+  "data_root": "../../../data",
+  "output_path": "../../../reports/server_transformers_lora_ps64_reviewed_v2_semantic_ps80_validation_89644892.json",
+  "split": "validation",
+  "repetitions": 1,
+  "power_mode": "rtx4060-local",
+  "runtime": {
+    "backend": "transformers",
+    "backend_revision": "5.9.0",
+    "model_id": "models/Qwen3-VL-2B-Instruct-89644892",
+    "model_revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+    "adapter_revision": "ps64-reviewed-v2-semantic-r16",
+    "precision": "bf16+lora",
+    "options": {
+      "device_map": "auto",
+      "dtype": "bfloat16",
+      "attn_implementation": "sdpa",
+      "adapter_path": "artifacts/adapters/qwen3_vl_2b_parking_lora_ps64_reviewed_v2_semantic"
+    }
+  }
+}

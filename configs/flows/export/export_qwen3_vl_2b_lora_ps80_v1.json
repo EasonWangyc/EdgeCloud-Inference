@@ -1,0 +1,23 @@
+{
+  "flow_id": "export_qwen3_vl_2b_lora_ps80_v1_89644892",
+  "stage": "export_model",
+  "working_directory": "../../..",
+  "command": [
+    "tensorrt-edgellm-export",
+    "artifacts/merged/qwen3_vl_2b_parking_lora_ps80_v1",
+    "artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1"
+  ],
+  "required_inputs": [
+    "../../../artifacts/merged/qwen3_vl_2b_parking_lora_ps80_v1/config.json",
+    "../../../artifacts/merged/qwen3_vl_2b_parking_lora_ps80_v1/model.safetensors"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1/visual/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_parking_lora_ps80_v1/visual/config.json"
+  ],
+  "record_path": "../../../reports/flows/export_qwen3_vl_2b_lora_ps80_v1.json",
+  "log_path": "../../../reports/flows/export_qwen3_vl_2b_lora_ps80_v1.log"
+}

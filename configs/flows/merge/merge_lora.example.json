@@ -1,0 +1,23 @@
+{
+  "flow_id": "merge_lora_v1",
+  "stage": "merge_lora",
+  "working_directory": "../../..",
+  "command": [
+    "replace-with-reviewed-lora-merge-command",
+    "--base-model",
+    "artifacts/checkpoints/qwen3-vl-2b",
+    "--adapter",
+    "artifacts/adapters/parking_lora_v1",
+    "--output",
+    "artifacts/merged/parking_lora_v1"
+  ],
+  "required_inputs": [
+    "../../../artifacts/checkpoints/qwen3-vl-2b/config.json",
+    "../../../artifacts/adapters/parking_lora_v1/adapter_config.json"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/merged/parking_lora_v1/config.json"
+  ],
+  "record_path": "../../../reports/flows/merge_lora_v1.json",
+  "log_path": "../../../reports/flows/merge_lora_v1.log"
+}

@@ -471,7 +471,7 @@ TRANSFORMERS_OFFLINE=1 \
 PYTHONPATH=src \
 timeout 1800s \
 .venv-jetson/bin/python -m parksight_vlm.app.run_study \
-  --config configs/studies/jetson_transformers_fp16_ps20_pilot.json
+  --config configs/studies/jetson/jetson_transformers_fp16_ps20_pilot.json
 ```
 
 运行结果结果如下：
@@ -532,10 +532,10 @@ export PYTHONPATH=/root/autodl-tmp/JetsonVLM/src
 export PATH=/root/autodl-tmp/TensorRT-Edge-LLM/.venv-export/bin:$PATH
 
 python scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_fp16.json
+  --config configs/flows/export/export_qwen3_vl_2b_fp16.json
 
 python scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_fp16.json \
+  --config configs/flows/export/export_qwen3_vl_2b_fp16.json \
   --execute
 ```
 
@@ -778,7 +778,7 @@ ModelOpt 0.44.0（NVIDIA 量化工具）, datasets 4.8.5, ONNX 1.19
 
 ```bash
 python scripts/quantize_model.py \
-  --config configs/flows/quantize_qwen3_vl_2b_int4_awq.json \
+  --config configs/flows/quantize/quantize_qwen3_vl_2b_int4_awq.json \
   --execute
 ```
 
@@ -802,7 +802,7 @@ AWQ内部做了什么：
 
 ```bash
 python scripts/export_model.py \
-  --config configs/flows/export_qwen3_vl_2b_int4_awq.json \
+  --config configs/flows/export/export_qwen3_vl_2b_int4_awq.json \
   --execute
 ```
 
@@ -818,7 +818,7 @@ llm/embedding.safetensors   622329944 字节  (~594 MB)   embedding 单独存
 
 ```bash
 .venv-jetson/bin/python scripts/build_engine.py \
-  --config configs/flows/build_qwen3_vl_2b_int4_awq_llm_engine_i768_k1024.json --execute
+  --config configs/flows/build/build_qwen3_vl_2b_int4_awq_llm_engine_i768_k1024.json --execute
 ```
 
 #### INT4量化模型板端推理

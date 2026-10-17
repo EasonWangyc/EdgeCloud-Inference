@@ -38,46 +38,46 @@ class StaticBackend:
 class AppTests(unittest.TestCase):
     def test_loads_all_repository_study_configs(self) -> None:
         transformers_config = AppStudyConfig.load(
-            PROJECT_ROOT / "configs" / "studies" / "transformers_base.json"
+            PROJECT_ROOT / "configs" / "studies" / "server" / "transformers_base.json"
         )
         jetson_transformers_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "jetson_transformers_fp16.json"
+            / "jetson" / "jetson_transformers_fp16.json"
         )
         edge_config = AppStudyConfig.load(
-            PROJECT_ROOT / "configs" / "studies" / "edgellm_fp16.json"
+            PROJECT_ROOT / "configs" / "studies" / "jetson" / "edgellm_fp16.json"
         )
         edge_ps20_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "jetson_edgellm_fp16_ps20_pilot.json"
+            / "jetson" / "jetson_edgellm_fp16_ps20_pilot.json"
         )
         candidate_lora_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "server_transformers_lora_ps64_codex_candidate_v1_ps20_pilot.json"
+            / "server" / "server_transformers_lora_ps64_codex_candidate_v1_ps20_pilot.json"
         )
         strict_json_edge_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "jetson_edgellm_int4_awq_ps16_v1_ps20_pilot_strict_json.json"
+            / "jetson" / "jetson_edgellm_int4_awq_ps16_v1_ps20_pilot_strict_json.json"
         )
         reviewed_edge_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "jetson_edgellm_lora_ps64_reviewed_v1_ps20_pilot.json"
+            / "jetson" / "jetson_edgellm_lora_ps64_reviewed_v1_ps20_pilot.json"
         )
         reviewed_int4_edge_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "jetson_edgellm_int4_awq_ps64_reviewed_v1_ps20_pilot_strict_json.json"
+            / "jetson" / "jetson_edgellm_int4_awq_ps64_reviewed_v1_ps20_pilot_strict_json.json"
         )
 
         self.assertEqual(transformers_config.runtime.backend, "transformers")
@@ -151,13 +151,13 @@ class AppTests(unittest.TestCase):
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "server_transformers_lora_ps64_codex_candidate_v1_ps80_train_strict_json.json"
+            / "server" / "server_transformers_lora_ps64_codex_candidate_v1_ps80_train_strict_json.json"
         )
         validation_config = AppStudyConfig.load(
             PROJECT_ROOT
             / "configs"
             / "studies"
-            / "server_transformers_lora_ps64_codex_candidate_v1_ps80_validation_strict_json.json"
+            / "server" / "server_transformers_lora_ps64_codex_candidate_v1_ps80_validation_strict_json.json"
         )
 
         self.assertEqual(train_config.study.split.value, "train")

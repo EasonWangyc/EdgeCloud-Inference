@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -80,6 +81,143 @@ def require_paged_kv_build_path(audit: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_staged_paged_graph(
+    path: Path, *, attention_count: int, max_batch_size: int,
+    max_pages_per_sequence: int,
+    max_kv_pool_pages: int,
+) -> dict[str, int]:
+    """Read only ONNX metadata; external INT4 weights stay on disk."""
+    try:
+        import onnx
+    except ImportError as error:
+        raise RuntimeError("paged ONNX build preflight requires the onnx package") from error
+    if __package__:
+        from scripts.experiments.prepare_edgellm_paged_onnx import validate_paged_graph_contract
+    else:
+        from experiments.prepare_edgellm_paged_onnx import validate_paged_graph_contract
+
+    model = onnx.load(str(path), load_external_data=False)
+    return validate_paged_graph_contract(
+        model,
+        attention_count=attention_count,
+        max_batch_size=max_batch_size,
+        max_pages_per_sequence=max_pages_per_sequence,
+        max_kv_pool_pages=max_kv_pool_pages,
+        int32_type=onnx.TensorProto.INT32,
+    )
+
+
+def require_paged_onnx_stage(
+    onnx_root: Path, *, max_batch_size: int, max_kv_cache_capacity: int,
+    max_kv_pool_pages: int,
+) -> dict[str, Any]:
+    """Reject dense or changed ONNX graphs before starting a paged engine build."""
+    provenance = onnx_root / "paged_onnx_provenance.json"
+    try:
+        report = json.loads(provenance.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"paged ONNX stage provenance is missing or invalid: {provenance}") from error
+    expected_pages_per_sequence = (max_kv_cache_capacity + 127) // 128
+    if max_kv_pool_pages < max_batch_size * expected_pages_per_sequence:
+        raise ValueError("paged KV pool is smaller than the batch worst-case capacity")
+    expected = {
+        "schema_version": "parksight_paged_onnx_stage_v1",
+        "tokens_per_page": 128,
+        "max_pages_per_sequence": expected_pages_per_sequence,
+        "max_kv_pool_pages": max_kv_pool_pages,
+        "max_batch_size": max_batch_size,
+    }
+    if any(report.get(key) != value for key, value in expected.items()):
+        raise ValueError("paged ONNX stage provenance does not match the build configuration")
+    files = report.get("staged_files_sha256")
+    if not isinstance(files, Mapping) or not files:
+        raise ValueError("paged ONNX stage provenance has no file hashes")
+    if not {"llm/model.onnx", "llm/model.onnx.data"}.issubset(files):
+        raise ValueError("paged ONNX stage provenance omits the graph or external weights")
+    for name, expected_digest in files.items():
+        if not isinstance(name, str) or not isinstance(expected_digest, str):
+            raise ValueError("paged ONNX stage file identity is invalid")
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"unsafe paged ONNX stage file path: {name}")
+    staged_paths = list(onnx_root.rglob("*"))
+    symlinks = [str(path) for path in staged_paths if path.is_symlink()]
+    if symlinks:
+        raise ValueError(f"paged ONNX stage contains symlinks: {symlinks}")
+    actual_files = {
+        str(path.relative_to(onnx_root)) for path in staged_paths
+        if path.is_file() and path != provenance
+    }
+    declared_files = set(files)
+    if actual_files != declared_files:
+        raise ValueError(
+            "paged ONNX stage file manifest differs from actual files: "
+            f"unlisted={sorted(actual_files - declared_files)}, "
+            f"missing={sorted(declared_files - actual_files)}"
+        )
+    for name, expected_digest in files.items():
+        path = onnx_root / name
+        if not path.is_file() or sha256_file(path) != expected_digest:
+            raise ValueError(f"paged ONNX stage file changed or is missing: {path}")
+    attention_count = report.get("attention_plugin_count")
+    if type(attention_count) is not int or attention_count <= 0:
+        raise ValueError("paged ONNX stage has an invalid AttentionPlugin count")
+    if __package__:
+        from scripts.experiments.prepare_edgellm_paged_onnx import expected_attention_count
+    else:
+        from experiments.prepare_edgellm_paged_onnx import expected_attention_count
+    layer_count = expected_attention_count(onnx_root / "llm" / "config.json")
+    if attention_count != layer_count:
+        raise ValueError(
+            f"paged ONNX AttentionPlugin count {attention_count} differs from "
+            f"num_hidden_layers {layer_count}"
+        )
+    graph_validation = _validate_staged_paged_graph(
+        onnx_root / "llm" / "model.onnx",
+        attention_count=attention_count,
+        max_batch_size=max_batch_size,
+        max_pages_per_sequence=expected_pages_per_sequence,
+        max_kv_pool_pages=max_kv_pool_pages,
+    )
+    return {
+        "provenance_path": str(provenance),
+        "provenance_sha256": sha256_file(provenance),
+        "attention_plugin_count": attention_count,
+        "graph_validation": graph_validation,
+        **expected,
+    }
+
+
+def validate_paged_engine_config(
+    path: Path, *, max_batch_size: int, max_input_len: int,
+    max_kv_cache_capacity: int, max_kv_pool_pages: int,
+) -> dict[str, Any]:
+    """Confirm the serialized engine config actually declares the paged layout."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"paged engine config is missing or invalid: {path}") from error
+    builder = payload.get("builder_config") if isinstance(payload, Mapping) else None
+    if not isinstance(builder, Mapping):
+        raise ValueError(f"paged engine config has no builder_config: {path}")
+    expected = {
+        "kv_cache_layout": "paged",
+        "tokens_per_page": 128,
+        "max_batch_size": max_batch_size,
+        "max_input_len": max_input_len,
+        "max_kv_cache_capacity": max_kv_cache_capacity,
+        "max_kv_pool_pages": max_kv_pool_pages,
+    }
+    mismatches = {
+        key: {"expected": value, "actual": builder.get(key)}
+        for key, value in expected.items()
+        if builder.get(key) != value or type(builder.get(key)) is not type(value)
+    }
+    if mismatches:
+        raise ValueError(f"paged engine config does not match requested layout: {mismatches}")
+    return {"path": str(path), "sha256": sha256_file(path), "builder_config": expected}
+
+
 def require_builder_controls(
     builder: Path, *, component: str, profiling_verbosity: str | None,
     timing_cache: Path | None,
@@ -152,6 +290,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="构建前审计固定 Edge-LLM checkout 的 paged-KV 源码入口",
     )
+    parser.add_argument(
+        "--expected-source-fingerprint",
+        help="要求 paged-KV 源码内容指纹与预检结果一致，防止固定 HEAD 下的本地补丁漂移",
+    )
+    parser.add_argument("--expected-llm-builder-sha256", help="预检时 LLM builder 二进制的 SHA-256")
+    parser.add_argument("--expected-visual-builder-sha256", help="预检时 visual builder 二进制的 SHA-256")
+    parser.add_argument("--expected-plugin-sha256", help="预检时 Edge-LLM plugin 二进制的 SHA-256")
     parser.add_argument("--workspace-limit-mib", type=int)
     parser.add_argument(
         "--builder-optimization-level",
@@ -208,6 +353,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="记录各组件构建耗时、命令和 builder 环境变量的 JSON",
     )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="只验证源码、ONNX、builder 和 plugin；不创建 engine 目录或执行构建",
+    )
     parser.add_argument("--enable-weight-streaming", action="store_true")
     parser.add_argument("--min-image-tokens", type=int, default=8)
     parser.add_argument("--max-image-tokens", type=int, default=2048)
@@ -219,13 +369,27 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-kv-pool-pages 必须大于 0")
     if args.max_kv_pool_pages is not None and args.component == "visual":
         parser.error("--max-kv-pool-pages requires an llm component")
+    if args.max_kv_pool_pages is not None and not args.verify_paged_kv_source:
+        parser.error("--max-kv-pool-pages requires --verify-paged-kv-source")
     if args.verify_paged_kv_source and args.max_kv_pool_pages is None:
         parser.error("--verify-paged-kv-source requires --max-kv-pool-pages")
+    if args.expected_source_fingerprint is not None:
+        if not args.verify_paged_kv_source:
+            parser.error("--expected-source-fingerprint requires --verify-paged-kv-source")
+        if re.fullmatch(r"[0-9a-f]{64}", args.expected_source_fingerprint) is None:
+            parser.error("--expected-source-fingerprint must be a lowercase SHA-256 digest")
+    for name in ("expected_llm_builder_sha256", "expected_visual_builder_sha256", "expected_plugin_sha256"):
+        value = getattr(args, name)
+        if value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            parser.error(f"--{name.replace('_', '-')} must be a lowercase SHA-256 digest")
+    if args.expected_llm_builder_sha256 is not None and args.component == "visual":
+        parser.error("--expected-llm-builder-sha256 requires an llm component")
+    if args.expected_visual_builder_sha256 is not None and args.component == "llm":
+        parser.error("--expected-visual-builder-sha256 requires a visual component")
     if args.timing_cache is not None:
         args.timing_cache = args.timing_cache.resolve()
         if args.timing_cache.exists() and not args.timing_cache.is_file():
             parser.error(f"--timing-cache 必须指向文件：{args.timing_cache}")
-        args.timing_cache.parent.mkdir(parents=True, exist_ok=True)
     if args.timing_cache is not None and args.timing_cache_binding is None:
         parser.error("--timing-cache requires --timing-cache-binding")
     if args.timing_cache_binding is not None:
@@ -289,13 +453,24 @@ def main(argv: list[str] | None = None) -> int:
         )
     paged_kv_source_audit = None
     if args.verify_paged_kv_source:
-        from scripts.audit_edgellm_kv_cache import audit_kv_cache_source
+        if __package__:
+            from scripts.diagnostics.audit_edgellm_kv_cache import audit_kv_cache_source
+        else:
+            from diagnostics.audit_edgellm_kv_cache import audit_kv_cache_source
 
         paged_kv_source_audit = audit_kv_cache_source(
             edge_llm_root=edge_root,
             expected_revision=args.expected_revision,
         )
         require_paged_kv_build_path(paged_kv_source_audit)
+        if (args.expected_source_fingerprint is not None
+                and paged_kv_source_audit["source_fingerprint"]["sha256"]
+                != args.expected_source_fingerprint):
+            raise ValueError(
+                "Edge-LLM source fingerprint changed since preflight: "
+                f"expected={args.expected_source_fingerprint}, "
+                f"actual={paged_kv_source_audit['source_fingerprint']['sha256']}"
+            )
     timing_cache_binding_report = None
     if args.timing_cache_binding is not None:
         timing_cache_binding_report = _validate_timing_cache_binding(
@@ -313,6 +488,14 @@ def main(argv: list[str] | None = None) -> int:
     missing_paths = [str(path) for path in required_paths if not path.exists()]
     if missing_paths:
         raise FileNotFoundError(f"缺少 engine 构建输入：{missing_paths}")
+    paged_onnx_stage_report = None
+    if args.max_kv_pool_pages is not None:
+        paged_onnx_stage_report = require_paged_onnx_stage(
+            onnx_root,
+            max_batch_size=args.max_batch_size,
+            max_kv_cache_capacity=args.max_kv_cache_capacity,
+            max_kv_pool_pages=args.max_kv_pool_pages,
+        )
 
     revision_result = subprocess.run(
         ["git", "-C", str(edge_root), "rev-parse", "HEAD"],
@@ -334,14 +517,20 @@ def main(argv: list[str] | None = None) -> int:
         expected_outputs.append(llm_engine_dir / "llm.engine")
     if args.component in {"both", "visual"}:
         expected_outputs.append(visual_engine_dir / "visual.engine")
-    existing_outputs = [str(path) for path in expected_outputs if path.exists()]
-    if existing_outputs:
-        raise FileExistsError(f"拒绝覆盖已有 engine：{existing_outputs}")
+    selected_dirs = []
     if args.component in {"both", "llm"}:
-        llm_engine_dir.mkdir(parents=True, exist_ok=True)
+        selected_dirs.append(llm_engine_dir)
     if args.component in {"both", "visual"}:
-        visual_engine_dir.mkdir(parents=True, exist_ok=True)
-
+        selected_dirs.append(visual_engine_dir)
+    occupied_dirs = [
+        str(directory) for directory in selected_dirs
+        if (directory.exists() or directory.is_symlink())
+        and (not directory.is_dir() or any(directory.iterdir()))
+    ]
+    if occupied_dirs:
+        raise FileExistsError(f"拒绝复用非空 engine 输出目录：{occupied_dirs}")
+    if args.build_report is not None and args.build_report.exists():
+        raise FileExistsError(f"拒绝覆盖已有 build report：{args.build_report}")
     llm_command, visual_command = build_commands(
         edge_root=edge_root,
         onnx_root=onnx_root,
@@ -410,12 +599,57 @@ def main(argv: list[str] | None = None) -> int:
         timing_cache_binding_report=timing_cache_binding_report,
         paged_kv_source_audit=paged_kv_source_audit,
     )
+    build_report["paged_onnx_stage"] = paged_onnx_stage_report
     build_report["profiling_control_modes"] = profiling_modes
     build_report["builder_binaries"] = {
         component: {"path": str(builder), "sha256": sha256_file(builder)}
         for component, builder in selected_builders
     }
+    build_report["plugin_binary"] = {
+        "path": str(plugin_path),
+        "sha256": sha256_file(plugin_path),
+    }
+    expected_binary_hashes = {
+        "llm": args.expected_llm_builder_sha256,
+        "visual": args.expected_visual_builder_sha256,
+    }
+    for component, identity in build_report["builder_binaries"].items():
+        expected_hash = expected_binary_hashes[component]
+        if expected_hash is not None and identity["sha256"] != expected_hash:
+            raise ValueError(f"{component} builder binary changed since preflight")
+    if (args.expected_plugin_sha256 is not None
+            and build_report["plugin_binary"]["sha256"] != args.expected_plugin_sha256):
+        raise ValueError("Edge-LLM plugin binary changed since preflight")
+    build_report["paged_engine_config"] = None
+    if args.check_only:
+        print(json.dumps({
+            "status": "ready_for_build",
+            "configuration": build_report["configuration"],
+            "paged_onnx_stage": paged_onnx_stage_report,
+            "paged_kv_source_audit": (
+                {
+                    "summary": paged_kv_source_audit["summary"],
+                    "source_fingerprint": paged_kv_source_audit["source_fingerprint"],
+                }
+                if paged_kv_source_audit is not None else None
+            ),
+            "profiling_control_modes": profiling_modes,
+            "builder_binaries": build_report["builder_binaries"],
+            "plugin_binary": build_report["plugin_binary"],
+            "expected_outputs": [str(path) for path in expected_outputs],
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if args.build_report is not None:
+        args.build_report.parent.mkdir(parents=True, exist_ok=True)
+        with args.build_report.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(build_report, ensure_ascii=False, indent=2) + "\n")
     try:
+        if args.timing_cache is not None:
+            args.timing_cache.parent.mkdir(parents=True, exist_ok=True)
+        if args.component in {"both", "llm"}:
+            llm_engine_dir.mkdir(parents=True, exist_ok=True)
+        if args.component in {"both", "visual"}:
+            visual_engine_dir.mkdir(parents=True, exist_ok=True)
         if args.component in {"both", "llm"}:
             _run_build_step(
                 component="llm",
@@ -423,6 +657,14 @@ def main(argv: list[str] | None = None) -> int:
                 environment=child_environment,
                 report=build_report,
             )
+            if args.max_kv_pool_pages is not None:
+                build_report["paged_engine_config"] = validate_paged_engine_config(
+                    llm_engine_dir / "config.json",
+                    max_batch_size=args.max_batch_size,
+                    max_input_len=args.max_input_len,
+                    max_kv_cache_capacity=args.max_kv_cache_capacity,
+                    max_kv_pool_pages=args.max_kv_pool_pages,
+                )
         if args.component in {"both", "visual"}:
             _run_build_step(
                 component="visual",
@@ -529,6 +771,10 @@ def _new_build_report(
                 args, "expected_lm_head_precision", None
             ),
             "verify_paged_kv_source": getattr(args, "verify_paged_kv_source", False),
+            "expected_source_fingerprint": getattr(args, "expected_source_fingerprint", None),
+            "expected_llm_builder_sha256": getattr(args, "expected_llm_builder_sha256", None),
+            "expected_visual_builder_sha256": getattr(args, "expected_visual_builder_sha256", None),
+            "expected_plugin_sha256": getattr(args, "expected_plugin_sha256", None),
         },
         "builder_environment": tracked_environment,
         "commands": {
@@ -713,11 +959,11 @@ def _validate_reduced_vocab_for_build(
         )
 
     try:
-        from scripts.validate_reduced_vocab import validate_mapping
+        from scripts.diagnostics.validate_reduced_vocab import validate_mapping
     except ModuleNotFoundError:
         # Support direct execution when the scripts directory, rather than the
         # repository root, is the first import path.
-        from validate_reduced_vocab import validate_mapping
+        from diagnostics.validate_reduced_vocab import validate_mapping
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     original_vocab_size = metadata.get("vocab_size") if isinstance(metadata, dict) else None

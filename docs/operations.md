@@ -51,7 +51,7 @@ TensorRT Edge-LLM revision 为准。
 
 云侧 vLLM 使用独立 `vllm_http` Adapter，通过 OpenAI-compatible Chat Completions
 API 发送图片 data URI 和冻结 workload prompt。PS20 研究配置模板为
-`configs/studies/server_vllm_http_ps20_pilot.example.json`。复制为实际 study 配置后，
+`configs/studies/server/server_vllm_http_ps20_pilot.example.json`。复制为实际 study 配置后，
 将 `backend_revision` 改为云服务安装的 vLLM 版本，将 `base_url`、`model_name` 和
 `precision` 改为实际服务值，并确认服务加载了配置声明的模型 revision；客户端记录的
 `model_revision` 不会自动验证远端权重。
@@ -61,7 +61,7 @@ WSL 本机部署、独立 Python 环境和 RTX 4060 Laptop 启动参数见
 
 ```bash
 .venv-vllm/bin/python scripts/benchmark_vllm_http.py \
-  --config configs/studies/wsl_vllm_workload_resize_ps20.json \
+  --config configs/studies/wsl/wsl_vllm_workload_resize_ps20.json \
   --gpu-telemetry \
   --metrics-url http://127.0.0.1:8000/metrics
 ```
@@ -73,7 +73,7 @@ WSL 本机部署、独立 Python 环境和 RTX 4060 Laptop 启动参数见
 
 ## 端云协同研究
 
-`configs/studies/jetson_edge_vllm_router_ps20_pilot.example.json` 提供一个 Edge-LLM
+`configs/studies/jetson/jetson_edge_vllm_router_ps20_pilot.example.json` 提供一个 Edge-LLM
 优先、vLLM 作为场景升级与故障备用的组合 Runtime。配置中的 laptop 地址、vLLM 版本和服务模型名
 是模板值；运行前需改为实际值。端侧服务由 Jetson 本机 HTTP endpoint 提供，云侧服务
 可以运行在同一局域网可访问的 laptop GPU 上。笔记本合盖休眠、网络切换或服务退出时，
@@ -165,37 +165,37 @@ export LD_LIBRARY_PATH=$JETSON_PY_CUDA_LIB:/home/ubuntu/TensorRT-Edge-LLM/build:
 ## 3. 冻结研究
 
 1. 按 [`data.md`](data.md) 准备 manifest、人工标注和图片。
-2. 确认 `configs/studies/*.json` 中的 `model_revision` 与实际缓存和待构建 engine
+2. 确认 `configs/studies/<group>/*.json` 中的 `model_revision` 与实际缓存和待构建 engine
    使用同一个不可变 commit；升级模型时必须显式修改并重新验证。
 3. 检查 backend、精度、power mode 和输出路径。
 4. 为三类实验使用独立配置和报告：
 
 | 配置 | 运行位置 | 状态 |
 | --- | --- | --- |
-| `configs/studies/transformers_base.json` | GPU 服务器 | 已提供，作为正确性参考 |
-| `configs/studies/jetson_transformers_fp16.json` | Jetson | 已提供，作为板端 Transformers FP16 基线 |
-| `configs/studies/edgellm_fp16.json` | Jetson | 已提供，作为 TensorRT Edge-LLM FP16 基线 |
-| `configs/studies/jetson_edgellm_fp16_ps20_pilot.json` | Jetson | 与 PS2.0 Transformers FP16 基线同口径比较 |
+| `configs/studies/server/transformers_base.json` | GPU 服务器 | 已提供，作为正确性参考 |
+| `configs/studies/jetson/jetson_transformers_fp16.json` | Jetson | 已提供，作为板端 Transformers FP16 基线 |
+| `configs/studies/jetson/edgellm_fp16.json` | Jetson | 已提供，作为 TensorRT Edge-LLM FP16 基线 |
+| `configs/studies/jetson/jetson_edgellm_fp16_ps20_pilot.json` | Jetson | 与 PS2.0 Transformers FP16 基线同口径比较 |
 
 服务器正确性参考：
 
 ```bash
 PYTHONPATH=src python3 -m parksight_vlm.app.run_study \
-  --config configs/studies/transformers_base.json
+  --config configs/studies/server/transformers_base.json
 ```
 
 Jetson Transformers FP16：
 
 ```bash
 PYTHONPATH=src python3 -m parksight_vlm.app.run_study \
-  --config configs/studies/jetson_transformers_fp16.json
+  --config configs/studies/jetson/jetson_transformers_fp16.json
 ```
 
 Jetson TensorRT Edge-LLM FP16：
 
 ```bash
 PYTHONPATH=src python3 -m parksight_vlm.app.run_study \
-  --config configs/studies/edgellm_fp16.json
+  --config configs/studies/jetson/edgellm_fp16.json
 ```
 
 研究入口在运行前校验来源组划分和标注完整性。报告保存配置身份、环境快照、每条
@@ -225,26 +225,26 @@ Edge-LLM Adapter 将关闭请求传给支持该钩子的后端；端云路由关
 
 ## 4. LoRA、合并、导出与 engine 构建
 
-`configs/flows/*.example.json` 保留为新实验的待审核模板。Qwen3-VL Base FP16、LoRA、
+`configs/flows/<stage>/*.example.json` 保留为新实验的待审核模板。Qwen3-VL Base FP16、LoRA、
 合并、INT4 和 Jetson engine 构建均已提供不带 `.example` 的实际配置；其中基础 FP16
 部署入口包括：
 
-- `configs/flows/export_qwen3_vl_2b_fp16.json`
-- `configs/flows/build_qwen3_vl_2b_fp16_engines.json`
+- `configs/flows/export/export_qwen3_vl_2b_fp16.json`
+- `configs/flows/build/build_qwen3_vl_2b_fp16_engines.json`
 
 完整服务器导出、传输、Jetson runtime 编译、engine 构建、server 和验收命令见
-[`edgellm-deployment.md`](edgellm-deployment.md)。新增实验先复制模板为不带
-`.example` 的实际配置，填入当前环境中已确认的命令、输入和输出，再做 dry-run：
+[`edgellm-deployment.md`](edgellm-deployment.md)。新增实验先把同目录的
+`*.example.json` 复制为 `*.local.json`，填入已确认的命令、输入和输出，再做 dry-run：
 
 ```bash
 PYTHONPATH=src python3 scripts/train_lora.py \
-  --config configs/flows/train_lora.json
+  --config configs/flows/train/train_lora.local.json
 PYTHONPATH=src python3 scripts/merge_lora.py \
-  --config configs/flows/merge_lora.json
+  --config configs/flows/merge/merge_lora.local.json
 PYTHONPATH=src python3 scripts/export_model.py \
-  --config configs/flows/export_model.json
+  --config configs/flows/export/export_model.local.json
 PYTHONPATH=src python3 scripts/build_engine.py \
-  --config configs/flows/build_engine.json
+  --config configs/flows/build/build_engine.local.json
 ```
 
 默认行为只输出 readiness，不执行外部命令。确认以下条件后，才增加 `--execute`：

@@ -1,0 +1,25 @@
+{
+  "flow_id": "train_qwen3_vl_2b_lora_ps64_codex_candidate_v1_89644892",
+  "stage": "train_lora",
+  "working_directory": "../../..",
+  "command": [
+    "python3",
+    "scripts/finetune_qwen3_vl_lora.py",
+    "--config",
+    "configs/training/qwen3_vl_2b_lora_ps64_codex_candidate_v1.json"
+  ],
+  "required_inputs": [
+    "../../../scripts/finetune_qwen3_vl_lora.py",
+    "../../training/qwen3_vl_2b_lora_ps64_codex_candidate_v1.json",
+    "../../../data/processed/lora/ps64_codex_candidate_v1.jsonl",
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/config.json",
+    "../../../models/Qwen3-VL-2B-Instruct-89644892/model.safetensors"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/adapters/qwen3_vl_2b_parking_lora_ps64_codex_candidate_v1/adapter_config.json",
+    "../../../artifacts/adapters/qwen3_vl_2b_parking_lora_ps64_codex_candidate_v1/adapter_model.safetensors",
+    "../../../artifacts/adapters/qwen3_vl_2b_parking_lora_ps64_codex_candidate_v1/training_summary.json"
+  ],
+  "record_path": "../../../reports/flows/train_qwen3_vl_2b_lora_ps64_codex_candidate_v1.json",
+  "log_path": "../../../reports/flows/train_qwen3_vl_2b_lora_ps64_codex_candidate_v1.log"
+}

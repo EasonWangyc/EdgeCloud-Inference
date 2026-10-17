@@ -1,0 +1,32 @@
+{
+  "flow_id": "export_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_89644892_ps16_v1",
+  "stage": "export_model",
+  "working_directory": "../../..",
+  "command": [
+    "tensorrt-edgellm-export",
+    "artifacts/quantized/qwen3_vl_2b_int4_awq_lm_head_candidate_ps16_v1",
+    "artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1",
+    "--reduced-vocab-dir",
+    "artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history"
+  ],
+  "required_inputs": [
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_lm_head_candidate_ps16_v1/config.json",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_lm_head_candidate_ps16_v1/model.safetensors",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_lm_head_candidate_ps16_v1/hf_quant_config.json",
+    "../../../artifacts/quantized/qwen3_vl_2b_int4_awq_lm_head_candidate_ps16_v1/calibration_provenance.json",
+    "../../../artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history/vocab_map.safetensors",
+    "../../../artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history/reduced_vocab.json",
+    "../../../artifacts/reduced_vocab/qwen3_vl_v1_65536_character_coverage_plus_history/selection_report.json"
+  ],
+  "expected_outputs": [
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/llm/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/llm/config.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/llm/embedding.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/llm/vocab_map.safetensors",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/llm/reduced_vocab.json",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/visual/model.onnx",
+    "../../../artifacts/onnx/qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1/visual/config.json"
+  ],
+  "record_path": "../../../reports/flows/export_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1.json",
+  "log_path": "../../../reports/flows/export_qwen3_vl_2b_int4_awq_lm_head_reduced_vocab65536_history_ps16_v1.log"
+}

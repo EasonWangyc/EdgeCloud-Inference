@@ -57,15 +57,14 @@ def compute_performance_metrics(
         if measured_decode_ms > 0 else None
     )
 
-    total_output_tokens = 0
-    total_end_to_end_ms = 0.0
-    for record in backend_completed_records:
-        if record.output_tokens is None or record.stage_timings.end_to_end_ms is None:
-            continue
-        total_output_tokens += record.output_tokens
-        total_end_to_end_ms += record.stage_timings.end_to_end_ms
+    complete_output_timing = [
+        record for record in backend_completed_records
+        if record.output_tokens is not None and record.stage_timings.end_to_end_ms is not None
+    ]
+    total_output_tokens = sum(record.output_tokens for record in complete_output_timing)
+    total_end_to_end_ms = sum(record.stage_timings.end_to_end_ms for record in complete_output_timing)
     aggregate_output_tokens_per_end_to_end_second = None
-    if total_end_to_end_ms > 0:
+    if len(complete_output_timing) == len(backend_completed_records) and total_end_to_end_ms > 0:
         aggregate_output_tokens_per_end_to_end_second = (
             total_output_tokens / (total_end_to_end_ms / 1000.0)
         )
