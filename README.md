@@ -1,18 +1,15 @@
 # EdgeCloud-Inference
 
 <p>
-  <img src="https://img.shields.io/badge/Built%20with-Codex-412991" alt="Built with Codex">
-</p>
-
-<p>
+  <img src="https://img.shields.io/badge/Built%20with-Codex-000000" alt="Built with Codex">
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/Qwen3--VL-2B--Instruct-6E56CF" alt="Qwen3-VL 2B Instruct">
 </p>
 
 <p>
-  <img src="https://raw.githubusercontent.com/vllm-project/media-kit/main/vLLM-Logo.svg" width="28" height="28" alt="vLLM 图标">
+  <img src="https://img.shields.io/badge/Qwen3--VL-2B--Instruct-FFD700" alt="Qwen3-VL 2B Instruct">
+  <img src="https://raw.githubusercontent.com/vllm-project/media-kit/main/vLLM-Logo.svg" width="20" height="20" alt="vLLM 图标">
   <img src="https://img.shields.io/badge/vLLM-0.11.2-30A2FF" alt="vLLM 0.11.2">
-  <img src="assets/tensorrt-badge.svg" alt="TensorRT Edge-LLM v0.9.1">
+  <img src="https://img.shields.io/badge/TensorRT--Edge--LLM-v0.9.1-76B900?logo=nvidia&amp;logoColor=white" alt="NVIDIA TensorRT Edge-LLM v0.9.1">
 </p>
 
 面向低速泊车场景的视觉语言模型研究与部署项目。项目围绕
