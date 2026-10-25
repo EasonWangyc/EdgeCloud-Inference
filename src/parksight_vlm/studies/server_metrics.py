@@ -8,6 +8,7 @@ from typing import Any
 
 
 _SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*(?:\{.*\})?)\s+([^\s]+)(?:\s+[^\s]+)?$')
+_LABEL = re.compile(r'\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*("(?:\\.|[^"\\])*")\s*')
 _TIMINGS = (
     "time_to_first_token_seconds", "inter_token_latency_seconds",
     "request_time_per_output_token_seconds", "e2e_request_latency_seconds",
@@ -28,15 +29,55 @@ def parse_samples(text: str) -> dict[str, float]:
         except ValueError:
             continue
         if math.isfinite(value):
-            samples[match[1]] = value
+            series = _canonical_series(match[1])
+            if series in samples:
+                raise ValueError("duplicate Prometheus metric series")
+            samples[series] = value
     return samples
+
+
+def _canonical_series(series: str) -> str:
+    """Match the same Prometheus series even when its label order changes."""
+    labels = _series_labels(series)
+    if labels is None:
+        return series
+    name = series.split("{", 1)[0]
+    normalized_labels = ",".join(
+        f"{key}={value}" for key, value in sorted(labels)
+    )
+    return f"{name}{{{normalized_labels}}}"
+
+
+def _series_labels(series: str) -> tuple[tuple[str, str], ...] | None:
+    _, separator, labels = series.partition("{")
+    if not separator or not labels.endswith("}"):
+        return None
+    body = labels[:-1]
+    parsed: list[tuple[str, str]] = []
+    position = 0
+    while position < len(body):
+        match = _LABEL.match(body, position)
+        if match is None:
+            return None
+        parsed.append((match[1], match[2]))
+        position = match.end()
+        if position < len(body):
+            if body[position] != ",":
+                return None
+            position += 1
+    if len({key for key, _ in parsed}) != len(parsed):
+        return None
+    return tuple(parsed)
 
 
 def summarize_window(before: str, after: str, elapsed_seconds: float) -> dict[str, Any]:
     """只对累积 count/sum/bucket/total 做差；窗口必须没有其他请求。"""
     if not math.isfinite(elapsed_seconds) or elapsed_seconds <= 0:
         raise ValueError("elapsed_seconds must be finite and positive")
-    previous, current = parse_samples(before), parse_samples(after)
+    try:
+        previous, current = parse_samples(before), parse_samples(after)
+    except ValueError:
+        return {"valid": False, "reason": "duplicate_metric_series"}
     process_start_before = {
         key: value for key, value in previous.items()
         if key.split("{", 1)[0] == "process_start_time_seconds"
@@ -54,6 +95,7 @@ def summarize_window(before: str, after: str, elapsed_seconds: float) -> dict[st
         }
     selected = {}
     reset = []
+
     def is_cumulative(key: str) -> bool:
         name = key.split("{", 1)[0]
         return name.startswith("vllm:") and name.endswith(("_sum", "_count", "_bucket", "_total"))
@@ -82,11 +124,33 @@ def summarize_window(before: str, after: str, elapsed_seconds: float) -> dict[st
         }
     generated = total("vllm:generation_tokens_total")
     completed = total("vllm:request_success_total")
+    finish_reason_counts: dict[str, float] = {}
+    for series, delta in selected.items():
+        if series.split("{", 1)[0] != "vllm:request_success_total":
+            continue
+        labels = _series_labels(series)
+        reason = dict(labels).get("finished_reason") if labels is not None else None
+        if reason is not None:
+            decoded_reason = reason[1:-1]
+            finish_reason_counts[decoded_reason] = (
+                finish_reason_counts.get(decoded_reason, 0.0) + delta
+            )
+    reason_coverage = sum(finish_reason_counts.values()) if finish_reason_counts else None
+    reason_coverage_complete = (
+        reason_coverage == completed
+        if reason_coverage is not None and completed is not None else None
+    )
     return {
         "valid": bool(selected),
         "scope": "server_global_window_requires_exclusive_traffic",
         "elapsed_seconds": elapsed_seconds,
         "request_success_count": completed,
+        "finish_reason_counts": finish_reason_counts or None,
+        "finish_reason_coverage_complete": reason_coverage_complete,
+        "non_stop_request_count": (
+            sum(count for reason, count in finish_reason_counts.items() if reason != "stop")
+            if finish_reason_counts else None
+        ),
         "generated_tokens": generated,
         "requests_per_second": completed / elapsed_seconds if completed is not None else None,
         "output_tokens_per_second": generated / elapsed_seconds if generated is not None else None,

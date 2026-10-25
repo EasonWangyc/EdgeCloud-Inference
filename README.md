@@ -138,50 +138,46 @@ models/              # 本地模型权重，默认不进入 Git
 
 ### 安装与无硬件测试
 
-```powershell
-py -3.12 -m venv .venv
-& ".\.venv\Scripts\python.exe" -m pip install -e .
-$env:PYTHONPATH = "src"
-& ".\.venv\Scripts\python.exe" -m unittest discover -s tests -v
+在 WSL 仓库根目录执行：
+
+```bash
+uv run python -m unittest discover -s tests
 ```
 
 ### 单图推理
 
-Transformers 单图示例：
+先按 [WSL vLLM 部署](docs/vllm-wsl-deployment.md)启动服务。以下示例使用已安装项目的 `.venv-vllm`：
 
-```powershell
-$env:PYTHONPATH = "src"
-& ".\.venv\Scripts\python.exe" -m parksight_vlm.app.analyze_image `
-  --image data\raw\example.jpg `
-  --workload configs\workloads\parking_risk_v2_strict_json.json `
-  --runtime transformers `
-  --backend-revision transformers-5.9.0 `
-  --model-revision 89644892e4d85e24eaac8bacfd4f463576704203 `
+```bash
+.venv-vllm/bin/python -m parksight_vlm.app.analyze_image \
+  --image data/raw/example.jpg \
+  --workload configs/workloads/parking_risk_v1.json \
+  --runtime vllm_http \
+  --backend-revision 0.11.2 \
+  --model-revision 89644892e4d85e24eaac8bacfd4f463576704203 \
   --precision bf16
 ```
 
-LoRA 加 `--adapter-path`；Jetson / vLLM HTTP 分别使用 `--runtime tensorrt_edge_llm_http --edge-url` 和 `--runtime vllm_http --vllm-url`。WSL 配置见[vLLM 部署](docs/vllm-wsl-deployment.md)。
+使用 Transformers 时改用 `--runtime transformers` 和对应环境；LoRA 加 `--adapter-path`。Jetson HTTP 使用 `--runtime tensorrt_edge_llm_http --edge-url`。
 
 ### 运行配置化 Study
 
-```powershell
-$env:PYTHONPATH = "src"
-Copy-Item configs\studies\server\server_vllm_http_ps20_pilot.example.json `
-  configs\studies\server\server_vllm_http_ps20_pilot.local.json
-& ".\.venv\Scripts\python.exe" -m parksight_vlm.app.run_study `
-  --config configs\studies\server\server_vllm_http_ps20_pilot.local.json
+```bash
+cp configs/studies/server/server_vllm_http_ps20_pilot.example.json \
+  configs/studies/server/server_vllm_http_ps20_pilot.local.json
+.venv-vllm/bin/python -m parksight_vlm.app.run_study \
+  --config configs/studies/server/server_vllm_http_ps20_pilot.local.json
 ```
 
-在配置副本中填写服务地址和部署身份；Jetson Study 使用对应板端配置。报告写入配置指定的 `reports/` 路径。
+运行前在配置副本中填写服务地址、实际 vLLM 版本和密钥环境变量（服务未启用鉴权时删除 `api_key_env`）；Jetson Study 使用对应板端配置。报告写入配置指定的 `reports/` 路径。
 
 ### 训练前门禁
 
 训练前校验数据、划分、工作负载和模型路径：
 
-```powershell
-$env:PYTHONPATH = "src"
-& ".\.venv-train\Scripts\python.exe" scripts\finetune_qwen3_vl_lora.py `
-  --config configs\training\qwen3_vl_2b_lora_ps64_reviewed_v1.json `
+```bash
+.venv-train/bin/python scripts/finetune_qwen3_vl_lora.py \
+  --config configs/training/qwen3_vl_2b_lora_ps64_reviewed_v1.json \
   --validate-only
 ```
 

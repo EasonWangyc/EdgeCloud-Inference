@@ -163,6 +163,11 @@ class OpenAICompatibleHttpBackend:
             raise RuntimeError("OpenAI-compatible response has no assistant content") from error
         if not isinstance(raw_output, str):
             raise RuntimeError("OpenAI-compatible assistant content must be a string")
+        finish_reason = response_payload["choices"][0].get("finish_reason")
+        if finish_reason is not None and (
+            not isinstance(finish_reason, str) or not finish_reason.strip()
+        ):
+            raise RuntimeError("OpenAI-compatible finish_reason must be a non-blank string")
         usage = response_payload.get("usage", {})
         output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
         if output_tokens is not None and (
@@ -213,6 +218,7 @@ class OpenAICompatibleHttpBackend:
             input_tokens=input_tokens,
             decode_tokens=decode_tokens,
             stream_timings=arrivals,
+            finish_reason=finish_reason,
         )
 
     def _open_persistent_response(
@@ -278,6 +284,7 @@ class OpenAICompatibleHttpBackend:
         first_token_ms: float | None = None
         last_payload: dict[str, object] = {}
         arrivals: list[float] = []
+        finish_reason: str | None = None
 
         for payload in cls.iter_sse_payloads(response):
             cls.validate_response_payload(payload)
@@ -286,6 +293,12 @@ class OpenAICompatibleHttpBackend:
             raw_usage = payload.get("usage")
             if isinstance(raw_usage, dict):
                 usage = raw_usage
+            for choice in payload.get("choices", []):
+                reason = choice.get("finish_reason")
+                if reason is not None:
+                    if finish_reason is not None and reason != finish_reason:
+                        raise RuntimeError("SSE response has conflicting finish reasons")
+                    finish_reason = reason
             contents = list(cls.extract_stream_content(payload))
             if any(contents):
                 arrival = (time.perf_counter() - request_start) * 1000.0
@@ -296,7 +309,10 @@ class OpenAICompatibleHttpBackend:
                 content_parts.append(content)
 
         result: dict[str, object] = {
-            "choices": [{"message": {"content": "".join(content_parts)}}]
+            "choices": [{
+                "message": {"content": "".join(content_parts)},
+                "finish_reason": finish_reason,
+            }]
         }
         if usage is not None:
             result["usage"] = usage
@@ -374,9 +390,14 @@ class OpenAICompatibleHttpBackend:
         choices = payload.get("choices", [])
         if not isinstance(choices, list):
             raise RuntimeError("OpenAI-compatible choices must be an array")
+        if len(choices) > 1:
+            raise RuntimeError("OpenAI-compatible response must contain at most one choice")
         for choice in choices:
             if not isinstance(choice, dict):
                 raise RuntimeError("OpenAI-compatible choice must be an object")
+            index = choice.get("index")
+            if index is not None and (type(index) is not int or index != 0):
+                raise RuntimeError("OpenAI-compatible choice index must be zero")
             if choice.get("finish_reason") == "content_filter":
                 raise RuntimeRefusalError("model response was filtered")
             if choice.get("finish_reason") == "error":

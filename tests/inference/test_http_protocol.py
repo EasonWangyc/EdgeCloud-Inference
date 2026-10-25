@@ -17,6 +17,7 @@ from parksight_vlm.inference import (
     StreamTimings,
 )
 from parksight_vlm.inference.edge_llm import OpenAICompatibleHttpBackend
+from parksight_vlm.studies.performance import compute_performance_metrics
 from parksight_vlm.workload import FrozenWorkload
 
 
@@ -80,6 +81,66 @@ class HttpProtocolTests(unittest.TestCase):
                 self.assertIsNone(record.assessment)
                 self.assertIsNone(record.raw_output)
                 self.assertIn("server error", record.failure.message)
+
+    def test_non_stop_finish_reason_preserves_output_but_fails_assessment(self):
+        text = json.dumps(ASSESSMENT)
+        for reason in ("length", "abort"):
+            responses = (
+                Response([
+                    event({"choices": [{"delta": {"content": text}}]}),
+                    event({"choices": [{"delta": {}, "finish_reason": reason}]}),
+                    event({"choices": [], "usage": {"completion_tokens": 31}}),
+                    b"data: [DONE]\n\n",
+                ]),
+                Response([json.dumps({
+                    "choices": [{"message": {"content": text}, "finish_reason": reason}],
+                    "usage": {"completion_tokens": 31},
+                }).encode()], stream=False),
+            )
+            for response in responses:
+                with self.subTest(reason=reason, stream=response.headers["Content-Type"]):
+                    record = self.record(response)
+                    self.assertFalse(record.succeeded)
+                    self.assertEqual(record.failure.category.value, "incomplete_generation")
+                    self.assertEqual(record.raw_output, text)
+                    self.assertEqual(record.output_tokens, 31)
+                    self.assertEqual(record.finish_reason, reason)
+                    self.assertEqual(record.to_mapping()["finish_reason"], reason)
+                    metrics = compute_performance_metrics([record])
+                    self.assertEqual(metrics.backend_completed_sample_count, 1)
+                    self.assertEqual(metrics.failed_sample_count, 1)
+
+    def test_stream_stop_finish_reason_is_retained_for_success(self):
+        record = self.record(Response([
+            event({"choices": [{"delta": {"content": json.dumps(ASSESSMENT)}}]}),
+            event({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            b"data: [DONE]\n\n",
+        ]))
+        self.assertTrue(record.succeeded)
+        self.assertEqual(record.finish_reason, "stop")
+
+    def test_multiple_or_nonzero_index_choices_cannot_be_miscounted(self):
+        text = json.dumps(ASSESSMENT)
+        for choices in (
+            [{"index": 0, "delta": {"content": text}},
+             {"index": 1, "delta": {"content": text}}],
+            [{"index": 1, "delta": {"content": text}}],
+        ):
+            non_stream_choices = [
+                {"index": choice["index"], "message": {"content": text}}
+                for choice in choices
+            ]
+            responses = (
+                Response([event({"choices": choices}), b"data: [DONE]\n\n"]),
+                Response([json.dumps({"choices": non_stream_choices}).encode()], stream=False),
+            )
+            for response in responses:
+                with self.subTest(choices=choices, stream=response.headers["Content-Type"]):
+                    record = self.record(response)
+                    self.assertFalse(record.succeeded)
+                    self.assertEqual(record.failure.category.value, "runtime_error")
+                    self.assertIn("choice", record.failure.message)
+                    self.assertIsNone(record.raw_output)
 
     def test_explicit_decode_count_is_preserved_without_inference_from_completion_usage(self):
         for count in (None, 4, True, -1, 1.5, 6):

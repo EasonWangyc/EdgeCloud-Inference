@@ -2868,7 +2868,7 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
             candidate = root / "candidate.json"
 
             def report(*, e2e: float, decode: float, quality: float, memory: float) -> dict[str, object]:
-                return {
+                payload = {
                     "records": [{"case_id": "one", "workload_identity": "workload-a",
                                  "input_tokens": 10, "raw_output": "{}", "assessment": {},
                                  "output_tokens": 2, "decode_tokens": 1, "failure": None}],
@@ -2907,6 +2907,11 @@ class TensorRTConfigAndEvidenceTests(unittest.TestCase):
                         },
                     },
                 }
+                payload["records"][0]["runtime_identity"] = dict(
+                    payload["study_identity"]["runtime_identity"]
+                )
+                payload["records"][0]["routing_decision"] = None
+                return payload
 
             baseline.write_text(json.dumps(report(e2e=1000, decode=500, quality=0.8, memory=4000)), encoding="utf-8")
             candidate.write_text(json.dumps(report(e2e=800, decode=400, quality=0.8, memory=4050)), encoding="utf-8")

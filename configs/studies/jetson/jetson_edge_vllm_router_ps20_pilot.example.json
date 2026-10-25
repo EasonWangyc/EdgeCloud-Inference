@@ -62,6 +62,7 @@
         "fallback_on": [
           "dependency_unavailable",
           "json_parse_error",
+          "incomplete_generation",
           "out_of_memory",
           "timeout",
           "unsupported_operator",

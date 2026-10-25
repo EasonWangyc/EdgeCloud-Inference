@@ -410,6 +410,22 @@ class EdgeCloudRoutingTests(unittest.TestCase):
             "timeout",
         )
 
+    def test_incomplete_edge_generation_can_fall_back_to_cloud(self) -> None:
+        router, edge, cloud = self._router(
+            edge_outcomes=[RuntimeFailure(
+                category=RuntimeFailureCategory.INCOMPLETE_GENERATION,
+                message="generation ended with finish_reason=length",
+                exception_type="RuntimeIncompleteGenerationError",
+            )],
+            cloud_outcomes=[assessment("medium", ["narrow_passage"])],
+            signals=self._signals(cloud_allowed=True),
+        )
+        record = router.analyze(test_case(), WORKLOAD)
+        self.assertTrue(record.succeeded)
+        self.assertEqual(edge.calls, 1)
+        self.assertEqual(cloud.calls, 1)
+        self.assertEqual(record.routing_decision["fallback_reason"], "incomplete_generation")
+
     def test_refusal_and_input_failures_do_not_trigger_cloud_fallback(self) -> None:
         for category in (
             RuntimeFailureCategory.MODEL_REFUSAL,

@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 from parksight_vlm.app.config import AppStudyConfig
@@ -165,6 +166,16 @@ def stop_gpu_monitor(monitor: subprocess.Popen) -> tuple[int | None, bool]:
         return None, True
 
 
+def _http_origin(url: str) -> tuple[str, str, int]:
+    """Identify the HTTP service used for inference and evidence collection."""
+    if not isinstance(url, str):
+        raise ValueError("URL must be an absolute HTTP(S) URL")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must be an absolute HTTP(S) URL")
+    return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
@@ -179,6 +190,16 @@ def main(argv: list[str] | None = None) -> int:
     config = AppStudyConfig.load(args.config)
     if config.runtime.backend != "vllm_http":
         parser.error("benchmark requires a vllm_http runtime")
+    try:
+        inference_origin = _http_origin(
+            config.runtime.options.get("base_url", "http://127.0.0.1:8000")
+        )
+        for name, url in (("--metrics-url", args.metrics_url),
+                          ("--server-info-url", args.server_info_url)):
+            if url is not None and _http_origin(url) != inference_origin:
+                parser.error(f"{name} must use the inference service's HTTP origin")
+    except ValueError as error:
+        parser.error(str(error))
     if args.output is not None:
         config = replace(config, output_path=args.output.resolve())
     output = config.output_path
@@ -239,6 +260,22 @@ def main(argv: list[str] | None = None) -> int:
     except FileExistsError:
         parser.error(f"evidence already exists: {execution_output}; use --output")
     try:
+        if args.server_info_url:
+            with urlopen(args.server_info_url, timeout=10) as response:
+                effective_before = extract_server_config(json.load(response))
+            server_config_before.write_text(
+                json.dumps(effective_before, indent=2) + "\n", encoding="utf-8"
+            )
+            identity_before = compare_server_identity(
+                effective_before,
+                model_revision=config.runtime.model_revision,
+                precision=config.runtime.precision,
+            )
+            execution["server_identity_before"] = identity_before
+            if not all(value is True for value in identity_before.values()):
+                execution["server_identity_verified"] = False
+                execution["status"] = "server_identity_unverified"
+                return 2
         warmup_config = replace(
             config,
             study=replace(config.study, study_id=config.study.study_id + "_warmup", repetitions=1),
@@ -254,20 +291,6 @@ def main(argv: list[str] | None = None) -> int:
         measurement_start_local = None
         measurement_end_local = None
         try:
-            if args.server_info_url:
-                with urlopen(args.server_info_url, timeout=10) as response:
-                    effective_before = extract_server_config(json.load(response))
-                server_config_before.write_text(json.dumps(effective_before, indent=2) + "\n", encoding="utf-8")
-                identity_before = compare_server_identity(
-                    effective_before,
-                    model_revision=config.runtime.model_revision,
-                    precision=config.runtime.precision,
-                )
-                execution["server_identity_before"] = identity_before
-                if not all(value is True for value in identity_before.values()):
-                    execution["server_identity_verified"] = False
-                    execution["status"] = "server_identity_unverified"
-                    return 2
             if args.gpu_telemetry:
                 try:
                     telemetry_fields = select_gpu_telemetry_fields()
@@ -315,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
                 execution["server_metrics_consistent"] = bool(
                     server.get("valid") and server["request_count_matches_client"]
                     and server["output_token_count_matches_client"]
+                    and server["finish_reason_coverage_complete"] is not False
+                    and server["non_stop_request_count"] in (None, 0)
                 )
                 metrics_summary.write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
             if args.server_info_url:

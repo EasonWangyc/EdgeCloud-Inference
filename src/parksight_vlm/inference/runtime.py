@@ -24,6 +24,7 @@ class RuntimeFailureCategory(str, Enum):
     DEPENDENCY_UNAVAILABLE = "dependency_unavailable"
     JSON_PARSE_ERROR = "json_parse_error"
     MODEL_REFUSAL = "model_refusal"
+    INCOMPLETE_GENERATION = "incomplete_generation"
     TIMEOUT = "timeout"
     OUT_OF_MEMORY = "out_of_memory"
     UNSUPPORTED_OPERATOR = "unsupported_operator"
@@ -44,6 +45,10 @@ class RuntimeUnsupportedError(RuntimeError):
 
 class RuntimeRefusalError(RuntimeError):
     """当后端明确识别出模型拒答时抛出。"""
+
+
+class RuntimeIncompleteGenerationError(RuntimeError):
+    """当后端明确报告非正常结束时抛出。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +196,7 @@ class RuntimeGeneration:
     input_tokens: int | None = None
     stream_timings: StreamTimings = field(default_factory=StreamTimings)
     decode_tokens: int | None = None
+    finish_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.raw_output, str):
@@ -208,6 +214,7 @@ class RuntimeGeneration:
         ):
             raise ValueError("input_tokens must be a non-negative integer")
         _validate_decode_tokens(self.decode_tokens, self.output_tokens)
+        _validate_finish_reason(self.finish_reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,11 +235,13 @@ class InferenceRecord:
     input_tokens: int | None = None
     stream_timings: StreamTimings = field(default_factory=StreamTimings)
     decode_tokens: int | None = None
+    finish_reason: str | None = None
 
     def __post_init__(self) -> None:
         if (self.assessment is None) == (self.failure is None):
             raise ValueError("record must contain exactly one of assessment or failure")
         _validate_decode_tokens(self.decode_tokens, self.output_tokens)
+        _validate_finish_reason(self.finish_reason)
 
     @property
     def succeeded(self) -> bool:
@@ -256,6 +265,7 @@ class InferenceRecord:
             "input_tokens": self.input_tokens,
             "stream_timings": self.stream_timings.to_mapping(),
             "decode_tokens": self.decode_tokens,
+            "finish_reason": self.finish_reason,
         }
 
 
@@ -285,6 +295,10 @@ class RiskRuntime(ABC):
             image_path = case.resolve_image(self._data_root, require_exists=True)
             generation = self._generate(image_path=image_path, workload=workload)
             raw_output = generation.raw_output
+            if generation.finish_reason not in (None, "stop"):
+                raise RuntimeIncompleteGenerationError(
+                    f"generation ended with finish_reason={generation.finish_reason}"
+                )
             payload = json.loads(raw_output)
             assessment = ParkingAssessment.from_mapping(payload)
         except Exception as error:  # 推理记录是明确的 Runtime 失败边界。
@@ -314,6 +328,7 @@ class RiskRuntime(ABC):
             input_tokens=generation.input_tokens if generation is not None else None,
             stream_timings=generation.stream_timings if generation is not None else StreamTimings(),
             decode_tokens=generation.decode_tokens if generation is not None else None,
+            finish_reason=generation.finish_reason if generation is not None else None,
         )
 
     @abstractmethod
@@ -327,6 +342,11 @@ def _validate_decode_tokens(value: int | None, output_tokens: int | None) -> Non
             raise ValueError("decode_tokens must be a non-negative integer")
         if output_tokens is not None and value > output_tokens:
             raise ValueError("decode_tokens cannot exceed output_tokens")
+
+
+def _validate_finish_reason(value: str | None) -> None:
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError("finish_reason must be a non-blank string when present")
 
 
 def _validate_measurement(value: float | None, field_name: str) -> None:
@@ -350,6 +370,8 @@ def _classify_failure(error: Exception) -> RuntimeFailure:
         category = RuntimeFailureCategory.JSON_PARSE_ERROR
     elif isinstance(error, RuntimeRefusalError):
         category = RuntimeFailureCategory.MODEL_REFUSAL
+    elif isinstance(error, RuntimeIncompleteGenerationError):
+        category = RuntimeFailureCategory.INCOMPLETE_GENERATION
     elif isinstance(error, TimeoutError):
         category = RuntimeFailureCategory.TIMEOUT
     elif isinstance(error, MemoryError) or "out of memory" in lowered_message:

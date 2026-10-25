@@ -28,6 +28,10 @@ SSE 片段可能包含多个 token，也可能因解码缓冲而延迟，因此�
 服务端算子时间。角色、空文本、usage 和 `[DONE]` 事件不计入文本事件；流中没有
 非空文本时，客户端 TTFT 保持 null，不用服务端 TTFT 代填。
 
+两个 HTTP Adapter 只接受单个候选（若提供 `index`，必须为 0）；流式 usage
+事件可使用空 `choices`。多候选响应按协议失败记录，避免把不同候选文本拼接为
+一条 assessment，或只取首条文本却统计全部候选的 token。
+
 逐样本保存服务端 `prompt_tokens` 和 `completion_tokens`。`token_counts` 同时保存
 usage 覆盖条数；不能把缺失 usage 的总数解释为真实零 token。墙钟窗口包含失败请求
 和客户端执行开销，排除预热及后续环境采集、报告落盘。它适用于将来的并发汇总。
@@ -56,7 +60,8 @@ token、115 次语言模型 forward，decode 计数为 114，阶段总时间为 
 `reports/vllm-wsl/decode-count-20261008/`，失败日志同样保留。
 
 `stage_latency_ms` 保持完整返回模型输出的口径，包括 JSON 校验失败但有
-`raw_output` 的记录；传输失败通常只有端到端耗时，另见全请求和失败请求
+`raw_output` 的记录，也包括已返回文本但 `finish_reason` 为 `length`、`abort`
+等非正常结束的记录；此类记录的 assessment 失败并保留结束原因。传输失败通常只有端到端耗时，另见全请求和失败请求
 分位数。每个阶段的 `count` 是实际测量条数，缺失阶段不填 0。两个总体
 允许重叠：JSON 错误既是完整后端执行，也是失败 assessment。
 资源峰值和请求平均功耗汇总保留所有记录中的已知测量，包括失败；缺失
@@ -251,12 +256,18 @@ benchmark 独立完成预热，在正式运行前后保存 `.metrics.before.prom
 `.metrics.after.prom`。`.server_metrics.json` 对累积计数和直方图作窗口差分，
 提供服务端 TTFT、ITL、逐请求 TPOT、排队、prefill、decode 和 E2E 的观察数量及
 均值，并保留全部桶差分。缺失指标保持 null；进程启动时间变化、累积序列回退或
-在结束快照中消失时，将窗口标记为无效。
+在结束快照中消失或同一抓取含重复序列时，将窗口标记为无效。同一序列的标签按名称归一化，避免抓取
+顺序变化被误判为计数器重置；标签值保持原样。若服务端提供
+`finished_reason` 标签，汇总分别记录 `stop`、`length` 等数量；出现非 `stop`
+结束或标签覆盖不全时，正式 benchmark 不通过。
 这里没有生成精确服务端 p50/p90/p99，直方图只能支持桶分辨率下的估计。
 
 服务端统计是全局窗口，要求服务没有其他请求、窗口内不重启，并检查成功请求计数
-与正式实验是否一致。输出 token 对照还要求每条完整返回的请求都有客户端 usage；
-覆盖不全时保存 `output_token_count_matches_client=null`，并将该窗口标记为不一致，
+与正式实验是否一致。`--metrics-url` 和 `--server-info-url` 必须与 study 的推理
+`base_url` 使用同一 HTTP scheme、主机和端口，拦截常见的端点误配；同一反向代理
+下若路径被转发到不同服务，仍须检查实际路由。
+输出 token 对照还要求每条完整返回的请求都有客户端 usage；覆盖不全时保存
+`output_token_count_matches_client=null`，并将该窗口标记为不一致，
 不把已知 token 的部分和误当成全量。服务端窗口吞吐包含 HTTP 之外的报告及采集开销，与客户端
 执行窗口分别报告。均值不是单张图片的精确阶段记录；不回填逐请求 `decode_ms`。
 GPU 遥测仍为设备级每秒采样，不能捕获全部瞬时峰值。
@@ -570,7 +581,7 @@ sidecar、独立服务日志、`server_profiles.json`、`summarize_graph.py` 和
 `/server_info?config_format=json`。benchmark 新增可选 `--server-info-url`：
 保存模型 revision、精度、缓存、调度、并行与 Graph 配置的前后快照，
 不保存 HF token 等未选择字段；同时记录 benchmark 脚本哈希。
-正式测量前要求服务端 revision 与 Study 配置完全一致，dtype 与声明精度一致
+发送预热请求前要求服务端 revision 与 Study 配置完全一致，dtype 与声明精度一致
 （例如 `torch.bfloat16` 对应 `bf16`）。字段缺失或不符时记录
 `server_identity_unverified` 并停止；测量后快照变化也使 execution 失败。
 已有 sidecar 时拒绝覆盖。未提供此参数时不宣称已核验服务端身份。
@@ -709,13 +720,16 @@ micro-F1 0 未改变。引擎身份、完整报告 SHA-256、复验与 ONNX 输�
 
 ## StudyReport 比较规则
 
-`compare_tensorrt_study_reports.py` 输出 v2 schema。吞吐与质量按越高越好计算，
+`compare_tensorrt_study_reports.py` 输出 v3 schema。吞吐与质量按越高越好计算，
 时延、内存、功耗与温度按越低越好计算；`speedup` 对吞吐为候选/基线，对
 时延为基线/候选。缺失或非有限值没有加速比，不使用旧 v1 吞吐方向解释结果。
 
 `match.comparable` 要求冻结 workload、runtime、并发/负载模式、重复次数、
-同机测量环境、输入图片哈希和逐 case 输入计数匹配。重复记录按多重集合
-比较，允许记录重新排序，保留重复次数。缺失记录或环境时标为未核验。
+同机测量环境、输入图片哈希、逐 case 输入计数，以及每条记录实际选中的 runtime
+和端云尝试路径、每次尝试的成功状态及失败类别匹配。重复记录按多重集合比较，
+允许记录重新排序，保留重复次数。
+`workload_comparable` 单独表示输入可比；路径不同即使原文输出相同也不能归因
+性能差异。缺失逐请求 runtime、路由证据或环境时标为未核验。
 `match.records.exact_output_match` 单独检查原始输出、assessment、输入/输出/
 decode token 和 failure；未知 token 不等于已验证一致。输出变化列出 case ID，
 不隐藏质量回归。可比和输出一致均不证明 engine 权重来源，也不是晋级授权。

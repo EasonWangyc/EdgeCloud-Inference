@@ -140,6 +140,9 @@ Transformers 与 Jetson Edge-LLM 的同机结果用于回答部署优化带来�
 `InferenceRecord.routing_decision` 保存策略、信号、尝试路径及失败类别，阶段时延包含
 路由开销。当前默认 provider 不采集温度、显存或链路质量遥测；缺失值不会被伪造成测量，
 需由设备/网络 provider 接入后才可用于资源门槛判断。
+路由记录的 `end_to_end_ms` 覆盖健康探测与全部尝试；其余阶段字段来自最终选中的
+后端。回退或云复核的各次后端耗时保存在 `routing_decision.attempts`，不能只用最终
+后端的 decode 时延解释整条路由的端到端延迟。
 
 实现和示例配置见 `src/parksight_vlm/inference/routing.py` 与
 `configs/studies/jetson/jetson_edge_vllm_router_ps20_pilot.example.json`。

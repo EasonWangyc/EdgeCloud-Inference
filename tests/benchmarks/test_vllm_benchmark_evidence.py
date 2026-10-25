@@ -39,7 +39,7 @@ class BenchmarkEvidenceTests(unittest.TestCase):
 
     def arguments(self, output):
         return ["--config", str(ROOT / "configs/studies/wsl/wsl_vllm_workload_resize_ps20.json"),
-                "--output", str(output), "--server-info-url", "http://localhost/server_info?config_format=json"]
+                "--output", str(output), "--server-info-url", "http://127.0.0.1:8000/server_info?config_format=json"]
 
     def run_with_snapshots(self, output, before, after):
         responses = [io.BytesIO(json.dumps(payload).encode()) for payload in (before, after)]
@@ -86,7 +86,7 @@ class BenchmarkEvidenceTests(unittest.TestCase):
             self.assertFalse(execution["server_identity_verified"])
             self.assertEqual(execution["status"], "failed")
 
-    def test_missing_or_mismatched_server_identity_stops_before_formal_study(self):
+    def test_missing_or_mismatched_server_identity_stops_before_warmup(self):
         for key, value, expected in (
             ("revision", "other-model", False),
             ("revision", None, None),
@@ -105,7 +105,7 @@ class BenchmarkEvidenceTests(unittest.TestCase):
                         patch.object(MODULE, "run_configured_study", return_value=self.report) as run, \
                         redirect_stdout(io.StringIO()):
                     self.assertEqual(MODULE.main(self.arguments(output)), 2)
-                self.assertEqual(run.call_count, 1)  # warm-up only
+                run.assert_not_called()
                 execution = json.loads(output.with_suffix(".execution.json").read_text())
                 self.assertEqual(execution["server_identity_before"][
                     "model_revision_matches_client" if key == "revision" else "precision_matches_client"
@@ -113,6 +113,7 @@ class BenchmarkEvidenceTests(unittest.TestCase):
                 self.assertFalse(execution["server_identity_verified"])
                 self.assertEqual(execution["status"], "server_identity_unverified")
                 self.assertFalse(output.exists())
+                self.assertFalse(output.with_name("run.warmup.json").exists())
 
     def test_existing_configuration_sidecar_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,13 +127,30 @@ class BenchmarkEvidenceTests(unittest.TestCase):
             run.assert_not_called()
             self.assertEqual(evidence.read_text(), "original evidence")
 
+    def test_evidence_endpoints_must_share_the_inference_origin(self):
+        for flag, url in (
+            ("--server-info-url", "http://127.0.0.1:8001/server_info?config_format=json"),
+            ("--metrics-url", "http://127.0.0.1:8001/metrics"),
+        ):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "run.json"
+                args = self.arguments(output)[:-2] + [flag, url]
+                with patch.object(MODULE, "urlopen") as get, \
+                        patch.object(MODULE, "run_configured_study") as run, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    MODULE.main(args)
+                self.assertEqual(error.exception.code, 2)
+                get.assert_not_called()
+                run.assert_not_called()
+                self.assertFalse(output.with_suffix(".execution.json").exists())
+
     def test_server_counter_mismatch_or_reset_fails_the_window(self):
         before = "vllm:request_success_total 10\nvllm:generation_tokens_total 20\n"
         for requests, tokens, expected_code in ((11, 22, 0), (12, 22, 2), (11, 23, 2), (1, 2, 2)):
             with self.subTest(requests=requests, tokens=tokens), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "run.json"
                 after = f"vllm:request_success_total {requests}\nvllm:generation_tokens_total {tokens}\n"
-                args = self.arguments(output)[:-2] + ["--metrics-url", "http://localhost/metrics"]
+                args = self.arguments(output)[:-2] + ["--metrics-url", "http://127.0.0.1:8000/metrics"]
                 responses = [io.BytesIO(text.encode()) for text in (before, after)]
                 with patch.object(MODULE, "urlopen", side_effect=responses), \
                         patch.object(MODULE, "run_configured_study", return_value=self.report), \
@@ -151,7 +169,7 @@ class BenchmarkEvidenceTests(unittest.TestCase):
         after = "vllm:request_success_total 11\nvllm:generation_tokens_total 22\n"
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "run.json"
-            args = self.arguments(output)[:-2] + ["--metrics-url", "http://localhost/metrics"]
+            args = self.arguments(output)[:-2] + ["--metrics-url", "http://127.0.0.1:8000/metrics"]
             responses = [io.BytesIO(text.encode()) for text in (before, after)]
             with patch.object(MODULE, "urlopen", side_effect=responses), \
                     patch.object(MODULE, "run_configured_study", return_value=self.report), \
@@ -161,6 +179,32 @@ class BenchmarkEvidenceTests(unittest.TestCase):
             execution = json.loads(output.with_suffix(".execution.json").read_text())
             self.assertFalse(summary["client_output_usage_complete"])
             self.assertIsNone(summary["output_token_count_matches_client"])
+            self.assertFalse(execution["server_metrics_consistent"])
+
+    def test_length_finished_request_fails_benchmark_even_when_counts_match(self):
+        before = (
+            'vllm:request_success_total{finished_reason="stop"} 10\n'
+            'vllm:request_success_total{finished_reason="length"} 0\n'
+            'vllm:generation_tokens_total 20\n'
+        )
+        after = (
+            'vllm:request_success_total{finished_reason="stop"} 10\n'
+            'vllm:request_success_total{finished_reason="length"} 1\n'
+            'vllm:generation_tokens_total 22\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run.json"
+            args = self.arguments(output)[:-2] + ["--metrics-url", "http://127.0.0.1:8000/metrics"]
+            responses = [io.BytesIO(text.encode()) for text in (before, after)]
+            with patch.object(MODULE, "urlopen", side_effect=responses), \
+                    patch.object(MODULE, "run_configured_study", return_value=self.report), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.main(args), 2)
+            summary = json.loads(output.with_suffix(".server_metrics.json").read_text())
+            execution = json.loads(output.with_suffix(".execution.json").read_text())
+            self.assertTrue(summary["request_count_matches_client"])
+            self.assertTrue(summary["output_token_count_matches_client"])
+            self.assertEqual(summary["non_stop_request_count"], 1)
             self.assertFalse(execution["server_metrics_consistent"])
 
     def test_requested_gpu_telemetry_must_produce_samples_from_live_monitor(self):

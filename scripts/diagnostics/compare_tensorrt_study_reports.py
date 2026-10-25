@@ -110,7 +110,7 @@ def compare_study_reports(
         ("hostname", "machine", "actual_power_mode", "measurement_mode", "input_image_sha256"),
     )
     return {
-        "schema_version": "parksight_tensorrt_study_comparison_v2",
+        "schema_version": "parksight_tensorrt_study_comparison_v3",
         "inputs": {
             "baseline": str(Path(baseline_path)),
             "candidate": str(Path(candidate_path)),
@@ -123,7 +123,7 @@ def compare_study_reports(
             "records": records,
             "environment": environment,
             "comparable": (identity["comparable"] and runtime["comparable"]
-                           and records["workload_comparable"] and environment["comparable"]),
+                           and records["execution_comparable"] and environment["comparable"]),
         },
         "execution": {
             "baseline_repetitions": baseline_identity.get("repetitions"),
@@ -135,7 +135,8 @@ def compare_study_reports(
         },
         "quality": quality,
         "evidence_boundary": (
-            "Comparable means serialized workload, runtime, environment and case/input coverage match; "
+            "Comparable means serialized workload, per-record execution path, runtime, "
+            "environment and case/input coverage match; "
             "exact_output_match is a separate observation. Neither proves engine weight provenance "
             "or authorizes promotion. This does not attribute a gain to "
             "an operator, tactic, kernel, KV-cache layout, or CUDA Graph; use Engine Inspector "
@@ -263,11 +264,13 @@ def _is_number(value: Any) -> bool:
 
 
 def compare_records(baseline: Any, candidate: Any) -> dict[str, Any]:
-    """Compare repeated case coverage and inputs independently of generated outputs."""
+    """Compare repeated inputs and actual execution paths separately from outputs."""
     fields = ("workload_identity", "input_tokens", "raw_output", "assessment",
               "output_tokens", "decode_tokens", "failure")
     result: dict[str, Any] = {"status": "unverified", "workload_comparable": False,
-                             "exact_output_match": False, "mismatches": {}, "missing_fields": []}
+                             "execution_comparable": False, "exact_output_match": False,
+                             "execution_path": {"status": "unverified", "comparable": False},
+                             "mismatches": {}, "missing_fields": []}
     if not isinstance(baseline, list) or not isinstance(candidate, list) or not baseline or not candidate:
         result["missing_fields"] = ["nonempty records"]
         return result
@@ -295,6 +298,10 @@ def compare_records(baseline: Any, candidate: Any) -> dict[str, Any]:
         field not in result["missing_fields"] and field not in result["mismatches"]
         for field in ("workload_identity", "input_tokens")
     )
+    result["execution_path"] = _compare_execution_paths(baseline, candidate)
+    result["execution_comparable"] = (
+        result["workload_comparable"] and result["execution_path"]["comparable"]
+    )
     result["exact_output_match"] = not result["missing_fields"] and not result["mismatches"]
     if result["exact_output_match"]:
         complete = [Counter(json.dumps({key: row[key] for key in ("case_id", *fields)},
@@ -305,6 +312,87 @@ def compare_records(baseline: Any, candidate: Any) -> dict[str, Any]:
             result["exact_output_match"] = False
     result["status"] = "mismatch" if result["mismatches"] else ("unverified" if result["missing_fields"] else "matched")
     return result
+
+
+def _compare_execution_paths(
+    baseline: list[Mapping[str, Any]], candidate: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    signatures: list[Counter[tuple[str, str]]] = []
+    missing: set[str] = set()
+    for rows in (baseline, candidate):
+        counted: Counter[tuple[str, str]] = Counter()
+        for row in rows:
+            runtime = row.get("runtime_identity")
+            if not isinstance(runtime, Mapping) or any(
+                not isinstance(runtime.get(field), str) or not runtime[field]
+                for field in _RUNTIME_FIELDS
+            ):
+                missing.add("runtime_identity")
+                continue
+            if "routing_decision" not in row:
+                missing.add("routing_decision")
+                continue
+            decision = row["routing_decision"]
+            if decision is None:
+                route: dict[str, Any] = {"kind": "direct"}
+            elif isinstance(decision, Mapping) and isinstance(decision.get("attempts"), list):
+                attempts = decision["attempts"]
+                if any(not isinstance(attempt, Mapping)
+                       or not isinstance(attempt.get("route"), str)
+                       or not attempt["route"]
+                       or not isinstance(attempt.get("succeeded"), bool)
+                       or (not attempt["succeeded"] and (
+                           not isinstance(attempt.get("failure"), Mapping)
+                           or not isinstance(attempt["failure"].get("category"), str)
+                       )) for attempt in attempts):
+                    missing.add("routing_decision.attempts")
+                    continue
+                selected = decision.get("selected_runtime")
+                if (not isinstance(decision.get("fallback_used"), bool)
+                        or (attempts and (
+                            not isinstance(decision.get("primary_runtime"), str)
+                            or selected != runtime["backend"]
+                        ))
+                        or (not attempts and selected is not None)):
+                    missing.add("routing_decision.identity")
+                    continue
+                route = {
+                    "kind": "routed",
+                    "primary_runtime": decision.get("primary_runtime"),
+                    "selected_runtime": decision.get("selected_runtime"),
+                    "attempts": [
+                        {"route": attempt["route"],
+                         "succeeded": attempt["succeeded"],
+                         "failure_category": (
+                             attempt["failure"]["category"]
+                             if not attempt["succeeded"] else None
+                         )}
+                        for attempt in attempts
+                    ],
+                    "fallback_used": decision.get("fallback_used"),
+                    "scene_escalation_attempted": decision.get("scene_escalation_attempted"),
+                    "scene_escalation_succeeded": decision.get("scene_escalation_succeeded"),
+                }
+            else:
+                missing.add("routing_decision")
+                continue
+            signature = {
+                "workload_identity": row.get("workload_identity"),
+                "input_tokens": row.get("input_tokens"),
+                "runtime_identity": runtime,
+                "route": route,
+            }
+            counted[(row["case_id"], json.dumps(signature, sort_keys=True, ensure_ascii=False))] += 1
+        signatures.append(counted)
+    if missing:
+        return {"status": "unverified", "comparable": False,
+                "missing_fields": sorted(missing), "mismatched_case_ids": []}
+    mismatched_cases = sorted({
+        case for case, _ in (signatures[0] - signatures[1]) | (signatures[1] - signatures[0])
+    })
+    return {"status": "mismatch" if mismatched_cases else "matched",
+            "comparable": not mismatched_cases, "missing_fields": [],
+            "mismatched_case_ids": mismatched_cases}
 
 
 if __name__ == "__main__":

@@ -52,8 +52,10 @@ Jetson Transformers FP16 如果无法加载、发生 OOM 或依赖不兼容，�
 
 ## 性能指标
 
-- 质量指标只对成功解析的记录计算；性能指标对已返回 `raw_output` 的后端完成记录计算，
-  因为 JSON 解析失败不应抹掉已经发生的推理耗时。未返回模型输出的记录不进入性能分位数。
+- 质量指标以全部尝试为分母；没有有效 assessment 的记录按错误或漏检计，
+  语义一致性率仅以有效 assessment 为分母。`stage_latency_ms` 对已返回
+  `raw_output` 的后端完成记录计算，因为输出无效不应抹掉已发生的推理耗时；
+  `all_request_stage_latency_ms` 另包含超时等未返回文本的请求。
 - 每个实际采集到的阶段分别计算 p50、p90、p99。
 - `first_request_ms` 保存首条记录已有的端到端时延；没有单独测量初始化时，
   `cold_start_ms` 保持 `null`。
@@ -76,6 +78,9 @@ Jetson Transformers FP16 如果无法加载、发生 OOM 或依赖不兼容，�
 
 ## 失败类别
 
-稳定类别包括输入错误、依赖不可用、JSON 解析失败、模型拒答、超时、内存不足、
+稳定类别包括输入错误、依赖不可用、JSON 解析失败、模型拒答、生成未正常结束、超时、内存不足、
 不支持算子和其他 runtime 错误。每个 `InferenceRecord` 恰好包含 assessment 或
 failure 之一，不会用默认业务输出掩盖失败。
+HTTP 后端显式返回非 `stop` 的 `finish_reason` 时，记录为 `incomplete_generation`；
+即使文本符合 JSON schema，也不计入有效 assessment。已返回的原文、token 数和
+时延仍保留在记录中，参与后端完成请求的性能统计。

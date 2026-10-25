@@ -36,6 +36,57 @@ vllm:num_requests_running{engine="0"} 0
         self.assertFalse(result["valid"])
         self.assertIn('vllm:generation_tokens_total{engine="0"}', result["reset_samples"])
 
+    def test_label_reordering_does_not_look_like_a_counter_reset(self) -> None:
+        before = (
+            'vllm:request_success_total{model_name="a,b",engine="0"} 10\n'
+            'vllm:generation_tokens_total{model_name="a\\\"b",engine="0"} 100\n'
+        )
+        after = (
+            'vllm:request_success_total{engine="0",model_name="a,b"} 12\n'
+            'vllm:generation_tokens_total{engine="0",model_name="a\\\"b"} 140\n'
+        )
+        result = summarize_window(before, after, 2)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["request_success_count"], 2)
+        self.assertEqual(result["generated_tokens"], 40)
+
+    def test_finish_reasons_are_counted_separately(self) -> None:
+        before = (
+            'vllm:request_success_total{engine="0",finished_reason="stop"} 10\n'
+            'vllm:request_success_total{engine="0",finished_reason="length"} 0\n'
+            'vllm:generation_tokens_total{engine="0"} 100\n'
+        )
+        after = (
+            'vllm:request_success_total{finished_reason="stop",engine="0"} 11\n'
+            'vllm:request_success_total{finished_reason="length",engine="0"} 1\n'
+            'vllm:generation_tokens_total{engine="0"} 120\n'
+        )
+        result = summarize_window(before, after, 2)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["request_success_count"], 2)
+        self.assertEqual(result["finish_reason_counts"], {"stop": 1, "length": 1})
+        self.assertTrue(result["finish_reason_coverage_complete"])
+        self.assertEqual(result["non_stop_request_count"], 1)
+
+    def test_partial_finish_reason_coverage_is_explicit(self) -> None:
+        before = 'vllm:request_success_total{finished_reason="stop"} 10\n'
+        after = (
+            'vllm:request_success_total{finished_reason="stop"} 11\n'
+            'vllm:request_success_total{engine="other"} 1\n'
+        )
+        result = summarize_window(before, after, 1)
+        self.assertFalse(result["finish_reason_coverage_complete"])
+        self.assertEqual(result["non_stop_request_count"], 0)
+
+    def test_duplicate_series_with_reordered_labels_invalidates_window(self) -> None:
+        after = (
+            'vllm:request_success_total{engine="0",finished_reason="stop"} 1\n'
+            'vllm:request_success_total{finished_reason="stop",engine="0"} 2\n'
+        )
+        result = summarize_window('', after, 1)
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["reason"], "duplicate_metric_series")
+
     def test_process_restart_invalidates_window_even_if_counters_increase(self) -> None:
         before = ('process_start_time_seconds 100\n'
                   'vllm:request_success_total 10\n'

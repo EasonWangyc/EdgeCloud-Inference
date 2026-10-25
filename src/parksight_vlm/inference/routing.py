@@ -128,6 +128,7 @@ class RoutingPolicy:
     fallback_on: tuple[RuntimeFailureCategory, ...] = (
         RuntimeFailureCategory.DEPENDENCY_UNAVAILABLE,
         RuntimeFailureCategory.JSON_PARSE_ERROR,
+        RuntimeFailureCategory.INCOMPLETE_GENERATION,
         RuntimeFailureCategory.OUT_OF_MEMORY,
         RuntimeFailureCategory.TIMEOUT,
         RuntimeFailureCategory.UNSUPPORTED_OPERATOR,
@@ -538,6 +539,7 @@ class EdgeCloudRouterRuntime(RiskRuntime):
             "failure": record.failure.to_mapping() if record.failure else None,
             "stage_timings": record.stage_timings.to_mapping(),
             "output_tokens": record.output_tokens,
+            "finish_reason": record.finish_reason,
         }
 
     def _routing_failure(
